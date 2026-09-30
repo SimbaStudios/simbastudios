@@ -1,0 +1,135 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+
+    <title>Simba Studios</title>
+
+    <style>
+        * {
+            box-sizing: border-box;
+        }
+
+        body {
+            margin: 0;
+            min-height: 100vh;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+
+            background:
+                radial-gradient(circle at top, #18203b 0%, #080a10 45%, #030406 100%);
+
+            color: white;
+            font-family: Arial, Helvetica, sans-serif;
+            overflow: hidden;
+        }
+
+        .container {
+            text-align: center;
+            padding: 40px;
+        }
+
+        .logo {
+            width: 90px;
+            height: 90px;
+            margin: 0 auto 25px;
+
+            display: flex;
+            align-items: center;
+            justify-content: center;
+
+            border-radius: 22px;
+
+            background: linear-gradient(135deg, #6d5dfc, #36c5f0);
+            box-shadow: 0 0 50px rgba(109, 93, 252, 0.35);
+
+            font-size: 42px;
+            font-weight: bold;
+        }
+
+        h1 {
+            margin: 0;
+            font-size: clamp(42px, 8vw, 80px);
+            letter-spacing: -3px;
+        }
+
+        .gradient {
+            background: linear-gradient(90deg, #8b7cff, #4ed8ff);
+            -webkit-background-clip: text;
+            background-clip: text;
+            color: transparent;
+        }
+
+        p {
+            margin-top: 18px;
+            color: #aeb4c5;
+            font-size: 18px;
+        }
+
+        .status {
+            display: inline-flex;
+            align-items: center;
+            gap: 9px;
+
+            margin-top: 25px;
+            padding: 10px 17px;
+
+            background: rgba(255,255,255,0.06);
+            border: 1px solid rgba(255,255,255,0.1);
+            border-radius: 100px;
+
+            color: #d9dcec;
+            font-size: 14px;
+        }
+
+        .dot {
+            width: 9px;
+            height: 9px;
+            border-radius: 50%;
+            background: #4cff88;
+
+            box-shadow: 0 0 12px #4cff88;
+        }
+
+        .footer {
+            position: fixed;
+            bottom: 25px;
+            left: 0;
+            right: 0;
+
+            text-align: center;
+            color: #565d70;
+            font-size: 13px;
+        }
+    </style>
+</head>
+
+<body>
+
+    <main class="container">
+
+        <div class="logo">S</div>
+
+        <h1>
+            Simba <span class="gradient">Studios</span>
+        </h1>
+
+        <p>
+            Games, networking technology, and whatever else we decide to build.
+        </p>
+
+        <div class="status">
+            <span class="dot"></span>
+            simbastudios.win is online
+        </div>
+
+    </main>
+
+    <div class="footer">
+        Simba Studios • Test Deployment
+    </div>
+
+</body>
+</html>
