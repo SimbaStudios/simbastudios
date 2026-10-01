@@ -3,17 +3,17 @@
   font-family: Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
   font-synthesis: none;
   text-rendering: optimizeLegibility;
-  --page: #0c100e;
-  --surface: #141a17;
-  --surface-raised: #1b231e;
-  --surface-soft: #202923;
-  --line: #303a33;
-  --line-strong: #465249;
-  --text: #e8eee9;
-  --muted: #a2afa5;
-  --green: #b8d99a;
-  --green-ink: #172115;
-  --warm: #dfaa81;
+  --page: #11120f;
+  --surface: #191a17;
+  --surface-raised: #20211d;
+  --surface-soft: #292a25;
+  --line: #34352f;
+  --line-strong: #4a4b42;
+  --text: #e7e5dc;
+  --muted: #aaa89d;
+  --green: #c4c08f;
+  --green-ink: #1b1b14;
+  --warm: #d99571;
   --danger: #e58e86;
   --radius: 8px;
 }
@@ -31,9 +31,7 @@ html {
 body {
   min-height: 100vh;
   margin: 0;
-  background:
-    radial-gradient(ellipse at 50% -20%, rgba(184, 217, 154, 0.08), transparent 52%),
-    var(--page);
+  background: var(--page);
   color: var(--text);
   font-size: 15px;
   line-height: 1.65;
@@ -65,8 +63,8 @@ select:focus-visible {
 }
 
 .page {
-  width: min(1160px, calc(100% - 40px));
-  margin: 28px auto 36px;
+  width: min(1080px, calc(100% - 40px));
+  margin: 36px auto 40px;
 }
 
 .shell {
@@ -76,7 +74,7 @@ select:focus-visible {
   border: 1px solid var(--line);
   border-radius: var(--radius);
   border-spacing: 0;
-  box-shadow: 0 24px 70px rgba(0, 0, 0, 0.24);
+  box-shadow: 0 12px 32px rgba(0, 0, 0, 0.14);
 }
 
 .shell tr:first-child {
@@ -95,7 +93,7 @@ select:focus-visible {
 .topbar {
   position: relative;
   padding: 24px 30px 21px;
-  background: linear-gradient(110deg, #1b241e, #151b17 68%);
+  background: #1b1c18;
   border-bottom: 1px solid var(--line);
 }
 
@@ -113,8 +111,8 @@ select:focus-visible {
   width: 8px;
   height: 8px;
   margin: 0 11px 3px 0;
-  background: var(--green);
-  border-radius: 2px;
+  background: var(--warm);
+  border-radius: 0;
 }
 
 .tiny {
@@ -133,13 +131,7 @@ select:focus-visible {
 }
 
 .nav::before {
-  display: block;
-  margin: 0 10px 10px;
-  color: #839087;
-  content: "NAVIGATION";
-  font-size: 10px;
-  font-weight: 700;
-  letter-spacing: 1px;
+  content: none;
 }
 
 .nav a {
@@ -324,17 +316,16 @@ h3 {
 }
 
 .project-grid {
-  display: grid;
-  grid-template-columns: repeat(2, minmax(0, 1fr));
-  gap: 12px;
+  display: block;
+  max-width: 680px;
 }
 
 .project-card {
   min-width: 0;
-  padding: 16px;
-  background: var(--surface-raised);
-  border: 1px solid var(--line);
-  border-radius: 6px;
+  padding: 18px 0;
+  background: transparent;
+  border-top: 1px solid var(--line);
+  border-radius: 0;
 }
 
 .project-card h2 {
@@ -382,18 +373,16 @@ h3 {
 
 .project-link {
   display: inline-block;
-  padding: 8px 12px;
-  color: var(--green-ink);
-  background: var(--green);
-  border-radius: 5px;
+  padding: 0;
+  color: var(--green);
   font-size: 13px;
   font-weight: 650;
-  text-decoration: none;
+  text-decoration: underline;
+  text-underline-offset: 3px;
 }
 
 .project-link:hover {
-  color: var(--green-ink);
-  background: #cce7b1;
+  color: #e0dba8;
 }
 
 .empty-project-state {
@@ -857,7 +846,6 @@ li {
 
   .info-grid,
   .gallery,
-  .project-grid,
   .auth-grid,
   .ticket-layout {
     grid-template-columns: minmax(0, 1fr);
