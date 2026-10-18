@@ -4,36 +4,31 @@
     <meta charset="utf-8">
     <meta name="viewport" content="width=device-width, initial-scale=1">
     <title>Simba Studios</title>
-    <link rel="stylesheet" href="/style.css">
+    <link rel="stylesheet" href="style.css">
   </head>
   <body>
     <div class="page">
-      <table class="shell" cellspacing="0" cellpadding="0">
-        <tr>
-          <td class="topbar" colspan="2">
-            <span class="brand">Simba Studios</span>
-            <span class="tiny">a small studio by Simba</span>
-          </td>
-        </tr>
-        <tr>
-          <td class="nav">
-            <a href="/">Home</a>
-            <a href="/other-projects.html">Other Projects</a>
-          </td>
-          <td class="content">
+      <header class="topbar">
+        <a class="brand" href="index.html">Simba Studios</a>
+        <span class="tiny">a small studio by Simba</span>
+      </header>
+      <div class="layout">
+        <nav class="nav" aria-label="Main navigation">
+          <a href="index.html" aria-current="page">Home</a>
+          <a href="other-projects.html">Other Projects</a>
+        </nav>
+        <main class="content">
             <h1>Simba Studios</h1>
             <p class="lead">
-              Hi, I'm Simba. I make games and small software projects, usually by starting with
-              an idea and seeing where it goes.
+              Hey, I'm Simba. I make games and little software projects. This is where I keep
+              track of what I'm working on.
             </p>
 
-            <p>I'm still building this site. For now, the projects page is the best place to see what I'm working on.</p>
-            <p><a class="project-link" href="/other-projects.html">See the projects</a></p>
-          </td>
-        </tr>
-      </table>
-
-      <p class="footer">Made by Simba</p>
+            <p>The site is a work in progress, much like the games. Have a look at the projects page.</p>
+            <p><a class="project-link" href="other-projects.html">Browse the projects</a></p>
+        </main>
+      </div>
+      <footer class="footer">Made by Simba</footer>
     </div>
   </body>
 </html>
