@@ -2392,6 +2392,18 @@ local function attachToggleKeybind(frame, label, toggleButton, storage, path, en
     bindButton.Font = Enum.Font.Code
     bindButton.ZIndex = toggleButton.ZIndex
     bindButton.Parent = frame
+    local clearButton = Instance.new("TextButton")
+    clearButton.Name = "ClearKeybind"
+    clearButton.Size = UDim2.fromOffset(17, 18)
+    clearButton.Position = UDim2.new(1, -119, 0.5, -9)
+    clearButton.BackgroundColor3 = Color3.fromRGB(110, 45, 49)
+    clearButton.BorderSizePixel = 0
+    clearButton.Text = "X"
+    clearButton.TextColor3 = Color3.fromRGB(255, 245, 245)
+    clearButton.TextSize = 11
+    clearButton.Font = Enum.Font.ArialBold
+    clearButton.ZIndex = toggleButton.ZIndex
+    clearButton.Parent = frame
     local function refresh()
         bindButton.Text = assigned or "KEY"
         if assigned and #assigned > 6 then bindButton.Text = assigned:sub(1, 5) .. "…" end
@@ -2418,6 +2430,15 @@ local function attachToggleKeybind(frame, label, toggleButton, storage, path, en
     bindButton.MouseButton1Click:Connect(function()
         pendingToggleBind = entry
         bindButton.Text = "..."
+    end)
+    clearButton.MouseButton1Click:Connect(function()
+        if pendingToggleBind == entry then pendingToggleBind = nil end
+        assigned = nil
+        entry.key = nil
+        writeSettingPath(storage, keyPath, nil)
+        schedulePanelSave()
+        refresh()
+        createNotification("Keybind removed", tostring(label) .. ": Unbound", 2, "info")
     end)
     entry.capture = function(input)
         if input.KeyCode == Enum.KeyCode.Escape then
@@ -2606,7 +2627,7 @@ local function createToggle(tabName: string, text: string, settingPathOrCallback
     local bindStorage = settingsRoot or Settings
     local bindPath = controlStatePath or {"MainToggles", tostring(tabName), tostring(text)}
     attachToggleKeybind(ToggleFrame, text, ToggleButton, bindStorage, bindPath, pressToggle)
-    ToggleLabel.Size = UDim2.new(1, -110, 1, 0)
+    ToggleLabel.Size = UDim2.new(1, -135, 1, 0)
     
     updateCanvasSize()
     return ToggleButton, ToggleFrame
@@ -3181,7 +3202,7 @@ local function createWindow(title: string, width: number?, height: number?, wind
             if windowSettings then
                 attachToggleKeybind(ToggleFrame, text, ToggleButton, windowSettings,
                     {"Windows", tostring(title), "Toggles", tostring(text)}, pressToggle)
-                ToggleLabel.Size = UDim2.new(1, -110, 1, 0)
+                ToggleLabel.Size = UDim2.new(1, -135, 1, 0)
             end
             return ToggleFrame
         end,
