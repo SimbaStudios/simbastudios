@@ -2361,6 +2361,115 @@ local function createTab(name, icon)
 end
 
 -- Toggle widget (FIXED - properly loads saved state)
+-- Shared toggle keybinds (one keyboard listener for the whole panel).
+local toggleKeybinds = {}
+local pendingToggleBind = nil
+local toggleBindCounter = 0
+local function attachToggleKeybind(frame, label, toggleButton, storage, path, entryPress)
+    if not storage or not path then return end
+    local keyPath = {"__PanelKeybinds"}
+    for _, part in ipairs(path) do table.insert(keyPath, tostring(part)) end
+    local saved = readSettingPath(storage, keyPath)
+    local assigned = type(saved) == "string" and Enum.KeyCode[saved] and saved or nil
+    -- The panel's persisted binding is authoritative, even when plugins initialize later.
+    local function reloadSavedBinding()
+        local current = readSettingPath(storage, keyPath)
+        local validated = type(current) == "string" and Enum.KeyCode[current] and current or nil
+        if assigned ~= validated then
+            assigned = validated
+            return true
+        end
+        return false
+    end
+    local bindButton = Instance.new("TextButton")
+    bindButton.Name = "Keybind"
+    bindButton.Size = UDim2.fromOffset(43, 18)
+    bindButton.Position = UDim2.new(1, -98, 0.5, -9)
+    bindButton.BackgroundColor3 = Color3.fromRGB(55, 62, 73)
+    bindButton.BorderSizePixel = 0
+    bindButton.TextColor3 = Color3.fromRGB(240, 240, 240)
+    bindButton.TextSize = 10
+    bindButton.Font = Enum.Font.Code
+    bindButton.ZIndex = toggleButton.ZIndex
+    bindButton.Parent = frame
+    local function refresh()
+        bindButton.Text = assigned or "KEY"
+        if assigned and #assigned > 6 then bindButton.Text = assigned:sub(1, 5) .. "…" end
+    end
+    refresh()
+    toggleBindCounter += 1
+    local entry = {frame = frame, key = assigned, reload = function()
+        local changed = reloadSavedBinding()
+        if changed then refresh() end
+        return assigned
+    end, activate = function()
+        if frame.Parent and toggleButton.Parent then
+            -- Use the existing click path so callbacks and persistence remain identical.
+            entryPress()
+            local state = toggleButton.Text == "ON" and "ON" or "OFF"
+            createNotification("Keybind: " .. tostring(label), tostring(label) .. " turned " .. state, 2, state == "ON" and "success" or "info")
+        end
+    end}
+    table.insert(toggleKeybinds, entry)
+    -- Reapply after deferred plugin initialization/restoration has completed.
+    task.defer(function()
+        if frame.Parent then entry.key = entry.reload() end
+    end)
+    bindButton.MouseButton1Click:Connect(function()
+        pendingToggleBind = entry
+        bindButton.Text = "..."
+    end)
+    entry.capture = function(input)
+        if input.KeyCode == Enum.KeyCode.Escape then
+            pendingToggleBind = nil
+            refresh()
+            return
+        end
+        if input.KeyCode == Enum.KeyCode.Backspace or input.KeyCode == Enum.KeyCode.Delete then
+            assigned = nil
+        elseif input.UserInputType == Enum.UserInputType.Keyboard and input.KeyCode ~= Enum.KeyCode.Unknown then
+            assigned = input.KeyCode.Name
+        else
+            return
+        end
+        entry.key = assigned
+        writeSettingPath(storage, keyPath, assigned)
+        schedulePanelSave()
+        pendingToggleBind = nil
+        refresh()
+        createNotification("Keybind updated", tostring(label) .. ": " .. (assigned or "Unbound"), 2, "info")
+    end
+    frame.Destroying:Connect(function()
+        if pendingToggleBind == entry then pendingToggleBind = nil end
+        for i = #toggleKeybinds, 1, -1 do
+            if toggleKeybinds[i] == entry then table.remove(toggleKeybinds, i) break end
+        end
+    end)
+    return bindButton
+end
+
+UserInputService.InputBegan:Connect(function(input, processed)
+    if pendingToggleBind then
+        pendingToggleBind.capture(input)
+        return
+    end
+    if processed or UserInputService:GetFocusedTextBox() then return end
+    if input.UserInputType ~= Enum.UserInputType.Keyboard then return end
+    if input.KeyCode == Enum.KeyCode.Unknown then return end
+    for i = #toggleKeybinds, 1, -1 do
+        local entry = toggleKeybinds[i]
+        if not entry.frame.Parent then
+            table.remove(toggleKeybinds, i)
+        else
+            -- Always resolve from persisted panel settings, not plugin-modified UI state.
+            entry.key = entry.reload()
+            if entry.key == input.KeyCode.Name then
+                entry.activate()
+            end
+        end
+    end
+end)
+
 local function createToggle(tabName: string, text: string, settingPathOrCallback: string | ToggleCallback, defaultValue: boolean?, settingsRoot, controlStatePath, restoreQueue)
     local ToggleFrame = Instance.new("Frame")
     ToggleFrame.Size = UDim2.new(1, 0, 0, 34)
@@ -2474,7 +2583,7 @@ local function createToggle(tabName: string, text: string, settingPathOrCallback
         })
     end
     
-    ToggleButton.MouseButton1Click:Connect(function()
+    local function pressToggle()
         isEnabled = not isEnabled
         
         if type(settingPathOrCallback) == "string" then
@@ -2492,7 +2601,12 @@ local function createToggle(tabName: string, text: string, settingPathOrCallback
         
         updateToggleUI(isEnabled)
         schedulePanelSave()
-    end)
+    end
+    ToggleButton.MouseButton1Click:Connect(pressToggle)
+    local bindStorage = settingsRoot or Settings
+    local bindPath = controlStatePath or {"MainToggles", tostring(tabName), tostring(text)}
+    attachToggleKeybind(ToggleFrame, text, ToggleButton, bindStorage, bindPath, pressToggle)
+    ToggleLabel.Size = UDim2.new(1, -110, 1, 0)
     
     updateCanvasSize()
     return ToggleButton, ToggleFrame
@@ -3048,7 +3162,7 @@ local function createWindow(title: string, width: number?, height: number?, wind
                 end})
             end
             
-            ToggleButton.MouseButton1Click:Connect(function()
+            local function pressToggle()
                 isEnabled = not isEnabled
                 if isEnabled then
                     ToggleButton.BackgroundColor3 = activeColors.Primary
@@ -3062,8 +3176,13 @@ local function createWindow(title: string, width: number?, height: number?, wind
                     schedulePanelSave()
                 end
                 if callback then callback(isEnabled) end
-            end)
-            
+            end
+            ToggleButton.MouseButton1Click:Connect(pressToggle)
+            if windowSettings then
+                attachToggleKeybind(ToggleFrame, text, ToggleButton, windowSettings,
+                    {"Windows", tostring(title), "Toggles", tostring(text)}, pressToggle)
+                ToggleLabel.Size = UDim2.new(1, -110, 1, 0)
+            end
             return ToggleFrame
         end,
         
@@ -3147,6 +3266,109 @@ local function createLabel(tabName: string, text: string)
 end
 
 -- Slider widget (now supports decimal precision)
+-- One wheel listener for every slider. Hit testing is based on cursor position,
+-- not MouseEnter, which is unreliable when controls overlap or are clipped.
+local wheelSliderRegistry = {}
+local wheelPausedScrollers = {}
+local wheelTarget = nil
+local wheelHoverCandidate = nil
+local wheelHoverStarted = 0
+local WHEEL_HOVER_DELAY = 1.0
+
+local function wheelContains(frame, point)
+    if not frame.Parent or not frame.Visible then return false end
+    local position, size = frame.AbsolutePosition, frame.AbsoluteSize
+    if size.X <= 0 or size.Y <= 0 then return false end
+    if point.X < position.X or point.X >= position.X + size.X
+        or point.Y < position.Y or point.Y >= position.Y + size.Y then return false end
+    local ancestor = frame.Parent
+    while ancestor do
+        if ancestor:IsA("GuiObject") then
+            if not ancestor.Visible then return false end
+            if ancestor.ClipsDescendants or ancestor:IsA("ScrollingFrame") then
+                local ap, as = ancestor.AbsolutePosition, ancestor.AbsoluteSize
+                if point.X < ap.X or point.X >= ap.X + as.X
+                    or point.Y < ap.Y or point.Y >= ap.Y + as.Y then return false end
+            end
+        end
+        if ancestor == ScreenGui then break end
+        ancestor = ancestor.Parent
+    end
+    return ancestor == ScreenGui
+end
+
+local function wheelFindTarget()
+    -- GetMouseLocation includes Roblox's top-bar inset, whereas this ScreenGui
+    -- uses IgnoreGuiInset=true. Convert to the GUI's coordinate space first.
+    local guiInset = game:GetService("GuiService"):GetGuiInset()
+    local mouse = UserInputService:GetMouseLocation() - guiInset
+    local best, bestZ = nil, -math.huge
+    for _, entry in ipairs(wheelSliderRegistry) do
+        if wheelContains(entry.frame, mouse) then
+            local z = entry.frame.ZIndex
+            if z >= bestZ then
+                best, bestZ = entry, z
+            end
+        end
+    end
+    return best
+end
+
+-- Only capture the wheel after one uninterrupted second over the same slider.
+-- Keep the scrollable container disabled *before* wheel input is dispatched.
+-- Re-evaluate every frame so mouse-enter events are not needed.
+local function wheelUpdateHover()
+    local target = wheelFindTarget()
+    if target ~= wheelHoverCandidate then
+        wheelHoverCandidate = target
+        wheelHoverStarted = os.clock()
+        wheelTarget = nil
+    elseif target and os.clock() - wheelHoverStarted >= WHEEL_HOVER_DELAY then
+        wheelTarget = target
+    else
+        wheelTarget = nil
+    end
+    local required = {}
+    if wheelTarget then
+        local ancestor = wheelTarget.frame.Parent
+        while ancestor do
+            if ancestor:IsA("ScrollingFrame") then required[ancestor] = true end
+            if ancestor == ScreenGui then break end
+            ancestor = ancestor.Parent
+        end
+    end
+    for scroller, previous in pairs(wheelPausedScrollers) do
+        if not required[scroller] or not scroller.Parent then
+            if scroller.Parent then scroller.ScrollingEnabled = previous end
+            wheelPausedScrollers[scroller] = nil
+        end
+    end
+    for scroller in pairs(required) do
+        if wheelPausedScrollers[scroller] == nil then
+            wheelPausedScrollers[scroller] = scroller.ScrollingEnabled
+        end
+        scroller.ScrollingEnabled = false
+    end
+end
+
+local wheelHoverConnection = RunService.RenderStepped:Connect(wheelUpdateHover)
+local wheelInputConnection = UserInputService.InputChanged:Connect(function(input)
+    if input.UserInputType ~= Enum.UserInputType.MouseWheel then return end
+    wheelUpdateHover()
+    if wheelTarget then
+        local delta = input.Position.Z
+        local direction = math.sign(delta)
+        if direction ~= 0 then wheelTarget.apply(direction) end
+    end
+end)
+ScreenGui.Destroying:Connect(function()
+    wheelHoverConnection:Disconnect()
+    wheelInputConnection:Disconnect()
+    for scroller, previous in pairs(wheelPausedScrollers) do
+        if scroller.Parent then scroller.ScrollingEnabled = previous end
+    end
+end)
+
 local function createSlider(tabName: string, text: string, min: number, max: number, default: number, callbackOrPath: string | SliderCallback, increment: number?, settingsRoot, controlStatePath, restoreQueue)
     local SliderFrame = Instance.new("Frame")
     SliderFrame.Size = UDim2.new(1, 0, 0, 45)
@@ -3303,6 +3525,29 @@ local function createSlider(tabName: string, text: string, min: number, max: num
         end
         if restoreQueue then table.insert(restoreQueue, restore) else task.defer(restore) end
     end
+
+    -- Register with one central wheel router; avoid competing per-slider handlers.
+    local wheelEntry = {
+        frame = SliderFrame,
+        apply = function(direction)
+            if max <= min then return end
+            local index = math.floor((currentValue - min) / step + 0.5)
+            local nextValue = math.clamp(min + (index + direction) * step, min, max)
+            if math.abs(nextValue - currentValue) < 0.000001 then return end
+            local fakeX = SliderBar.AbsolutePosition.X
+                + ((nextValue - min) / (max - min)) * SliderBar.AbsoluteSize.X
+            updateSlider({Position = Vector3.new(fakeX, 0, 0)})
+        end,
+    }
+    table.insert(wheelSliderRegistry, wheelEntry)
+    SliderFrame.Destroying:Connect(function()
+        for i = #wheelSliderRegistry, 1, -1 do
+            if wheelSliderRegistry[i] == wheelEntry then
+                table.remove(wheelSliderRegistry, i)
+                break
+            end
+        end
+    end)
 
     SliderButton.MouseButton1Down:Connect(function()
         dragging = true
