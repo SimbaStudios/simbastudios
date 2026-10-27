@@ -2,6 +2,15 @@
 -- Panel settings and appearance choices are saved locally between sessions.
 -- NOW WITH: Plugin Save/Load API & Enhanced Player Access
 
+-- CHANGELOG SETTINGS: edit these for each release.
+local PANEL_VERSION = "1.3.8"
+local PANEL_CHANGELOG = {
+    Added = {},
+    Changed = {},
+    Fixed = {"Fixed Remove favorite in the plugin right-click menu so it actually clears the saved favorite and refreshes Favorites"},
+    Removed = {},
+}
+
 local Players = game:GetService("Players")
 local RunService = game:GetService("RunService")
 local UserInputService = game:GetService("UserInputService")
@@ -893,7 +902,181 @@ local Plugins = {}
 local pluginAPIs: {[string]: any} = {}
 local ESPObjects = {}
 local connections = {}
-local windowZIndex = 100 
+local windowZIndex = 100
+
+-- Dragging follows the cursor with a frame-rate independent easing factor.
+-- The target continues to settle even when the mouse stops moving.
+local function attachSmoothDrag(handle, frame, connectionList, onStart)
+    local draggingNow = false
+    local startMouse = nil
+    local startPosition = nil
+    local targetPosition = frame.Position
+    local responsiveness = 17
+
+    -- Work in the same coordinate system as the ScreenGui. Respect the
+    -- frame's AnchorPoint and scale-based Position when clamping offsets.
+    local function clampToScreen(position)
+        local viewport = ScreenGui.AbsoluteSize
+        local frameSize = frame.AbsoluteSize
+        if viewport.X <= 0 or viewport.Y <= 0 then return position end
+
+        local anchor = frame.AnchorPoint
+        local minX = frameSize.X * anchor.X
+        local maxX = viewport.X - frameSize.X * (1 - anchor.X)
+        local minY = frameSize.Y * anchor.Y
+        local maxY = viewport.Y - frameSize.Y * (1 - anchor.Y)
+
+        -- For windows larger than the screen, keep their top-left corner
+        -- accessible rather than allowing the entire window to disappear.
+        if maxX < minX then maxX = minX end
+        if maxY < minY then maxY = minY end
+
+        local x = math.clamp(viewport.X * position.X.Scale + position.X.Offset, minX, maxX)
+        local y = math.clamp(viewport.Y * position.Y.Scale + position.Y.Offset, minY, maxY)
+        return UDim2.new(
+            position.X.Scale, x - viewport.X * position.X.Scale,
+            position.Y.Scale, y - viewport.Y * position.Y.Scale
+        )
+    end
+
+    local began = handle.InputBegan:Connect(function(input)
+        if input.UserInputType ~= Enum.UserInputType.MouseButton1 then return end
+        if frame:GetAttribute("SimbaResizing") then return end
+        if onStart then onStart() end
+        draggingNow = true
+        startMouse = input.Position
+        startPosition = clampToScreen(frame.Position)
+        targetPosition = startPosition
+    end)
+
+    local moved = UserInputService.InputChanged:Connect(function(input)
+        if not draggingNow or input.UserInputType ~= Enum.UserInputType.MouseMovement then return end
+        local delta = input.Position - startMouse
+        targetPosition = clampToScreen(UDim2.new(
+            startPosition.X.Scale, startPosition.X.Offset + delta.X,
+            startPosition.Y.Scale, startPosition.Y.Offset + delta.Y
+        ))
+    end)
+
+    local ended = UserInputService.InputEnded:Connect(function(input)
+        if input.UserInputType == Enum.UserInputType.MouseButton1 then
+            draggingNow = false
+        end
+    end)
+
+    local render = RunService.RenderStepped:Connect(function(dt)
+        if not frame.Parent then return end
+        if frame:GetAttribute("SimbaResizing") then
+            draggingNow = false
+            targetPosition = frame.Position
+            return
+        end
+        targetPosition = clampToScreen(targetPosition)
+        local alpha = 1 - math.exp(-responsiveness * math.min(dt, 0.1))
+        frame.Position = clampToScreen(frame.Position:Lerp(targetPosition, alpha))
+    end)
+
+    local localConnections = {began, moved, ended, render}
+    if connectionList then
+        for _, connection in ipairs(localConnections) do
+            table.insert(connectionList, connection)
+        end
+    end
+    frame.Destroying:Connect(function()
+        for _, connection in ipairs(localConnections) do
+            connection:Disconnect()
+        end
+    end)
+end
+
+
+
+-- Windows-style eight-direction resizing. Handles live inside the window,
+-- with their hit areas inset from the edges so they remain on-screen.
+local function attachWindowResize(frame, minWidth, minHeight, connectionList, onResize, onStart)
+    local edge = 7
+    local corner = 13
+    local handles = {
+        {"Top", 0, -1, UDim2.new(0, corner, 0, 0), UDim2.new(1, -2*corner, 0, edge)},
+        {"Bottom", 0, 1, UDim2.new(0, corner, 1, -edge), UDim2.new(1, -2*corner, 0, edge)},
+        {"Left", -1, 0, UDim2.new(0, 0, 0, corner), UDim2.new(0, edge, 1, -2*corner)},
+        {"Right", 1, 0, UDim2.new(1, -edge, 0, corner), UDim2.new(0, edge, 1, -2*corner)},
+        {"TopLeft", -1, -1, UDim2.fromOffset(0, 0), UDim2.fromOffset(corner, corner)},
+        {"TopRight", 1, -1, UDim2.new(1, -corner, 0, 0), UDim2.fromOffset(corner, corner)},
+        {"BottomLeft", -1, 1, UDim2.new(0, 0, 1, -corner), UDim2.fromOffset(corner, corner)},
+        {"BottomRight", 1, 1, UDim2.new(1, -corner, 1, -corner), UDim2.fromOffset(corner, corner)},
+    }
+    local active, startMouse, startLeft, startTop, startW, startH
+    local function viewport()
+        return ScreenGui.AbsoluteSize
+    end
+    local function resizeAt(mouse)
+        if not active or not frame.Parent then return end
+        local bounds = viewport()
+        if bounds.X <= 0 or bounds.Y <= 0 then return end
+        local dx = mouse.X - startMouse.X
+        local dy = mouse.Y - startMouse.Y
+        local x1, y1 = startLeft, startTop
+        local x2, y2 = startLeft + startW, startTop + startH
+        local maxW = math.max(1, bounds.X)
+        local maxH = math.max(1, bounds.Y)
+        local minW = math.min(minWidth, maxW)
+        local minH = math.min(minHeight, maxH)
+        if active.x == -1 then x1 = math.clamp(startLeft + dx, 0, x2 - minW) end
+        if active.x == 1 then x2 = math.clamp(startLeft + startW + dx, x1 + minW, maxW) end
+        if active.y == -1 then y1 = math.clamp(startTop + dy, 0, y2 - minH) end
+        if active.y == 1 then y2 = math.clamp(startTop + startH + dy, y1 + minH, maxH) end
+        local w, h = x2 - x1, y2 - y1
+        local anchor = frame.AnchorPoint
+        frame.Position = UDim2.fromOffset(x1 + anchor.X * w, y1 + anchor.Y * h)
+        frame.Size = UDim2.fromOffset(w, h)
+        if onResize then onResize(w, h) end
+    end
+    local localConnections = {}
+    for _, spec in ipairs(handles) do
+        local handle = Instance.new("TextButton")
+        handle.Name = "Resize" .. spec[1]
+        handle.BackgroundTransparency = 1
+        handle.Text = ""
+        handle.AutoButtonColor = false
+        handle.BorderSizePixel = 0
+        handle.Position = spec[4]
+        handle.Size = spec[5]
+        handle.ZIndex = 100000
+        handle.Parent = frame
+        local c = handle.InputBegan:Connect(function(input)
+            if input.UserInputType ~= Enum.UserInputType.MouseButton1 then return end
+            if frame:GetAttribute("SimbaResizeDisabled") then return end
+            if onStart then onStart() end
+            local abs = frame.AbsolutePosition
+            local size = frame.AbsoluteSize
+            active = {x = spec[2], y = spec[3]}
+            startMouse = input.Position
+            startLeft, startTop = abs.X, abs.Y
+            startW, startH = size.X, size.Y
+            frame:SetAttribute("SimbaResizing", true)
+        end)
+        table.insert(localConnections, c)
+    end
+    table.insert(localConnections, UserInputService.InputChanged:Connect(function(input)
+        if active and input.UserInputType == Enum.UserInputType.MouseMovement then
+            resizeAt(input.Position)
+        end
+    end))
+    table.insert(localConnections, UserInputService.InputEnded:Connect(function(input)
+        if active and input.UserInputType == Enum.UserInputType.MouseButton1 then
+            resizeAt(input.Position)
+            active = nil
+            frame:SetAttribute("SimbaResizing", false)
+        end
+    end))
+    if connectionList then
+        for _, c in ipairs(localConnections) do table.insert(connectionList, c) end
+    end
+    frame.Destroying:Connect(function()
+        for _, c in ipairs(localConnections) do c:Disconnect() end
+    end)
+end
 
 -- Plugin data and panel configuration share a dedicated local folder.
 pcall(function()
@@ -1464,34 +1647,8 @@ local function createLoadingScreen()
     ErrorLabel.ZIndex = 200002
     ErrorLabel.Parent = LoadContent
 
-    -- Dragging
-    local loadDragging = false
-    local loadMousePos, loadFramePos
-    local loadInputChangedConn, loadInputEndedConn
-
-    LoadTopBar.InputBegan:Connect(function(input)
-        if input.UserInputType == Enum.UserInputType.MouseButton1 then
-            loadDragging = true
-            loadMousePos = input.Position
-            loadFramePos = LoadFrame.Position
-        end
-    end)
-
-    loadInputChangedConn = UserInputService.InputChanged:Connect(function(input)
-        if loadDragging and input.UserInputType == Enum.UserInputType.MouseMovement then
-            local delta = input.Position - loadMousePos
-            LoadFrame.Position = UDim2.new(
-                loadFramePos.X.Scale, loadFramePos.X.Offset + delta.X,
-                loadFramePos.Y.Scale, loadFramePos.Y.Offset + delta.Y
-            )
-        end
-    end)
-
-    loadInputEndedConn = UserInputService.InputEnded:Connect(function(input)
-        if input.UserInputType == Enum.UserInputType.MouseButton1 then
-            loadDragging = false
-        end
-    end)
+    -- Smooth drag for the plugin loader.
+    attachSmoothDrag(LoadTopBar, LoadFrame, connections)
 
     -- Minimize
     local loadMinimized = false
@@ -1512,8 +1669,6 @@ local function createLoadingScreen()
     local function cleanupLoader()
         if isCleaned then return end
         isCleaned = true
-        if loadInputChangedConn then loadInputChangedConn:Disconnect() end
-        if loadInputEndedConn then loadInputEndedConn:Disconnect() end
         if LoadFrame and LoadFrame.Parent then
             LoadFrame:Destroy()
             pruneThemeObjects({})
@@ -1539,8 +1694,9 @@ local updatePluginHub
 local createPluginAPI
 local schedulePanelSave
 local cleanupPluginRuntime
+local pluginSourcePaths = {}
 
-local function loadPlugins(useStartupOverlay)
+local function loadPlugins(useStartupOverlay, onlyFilePath)
     task.spawn(function()
         if not isfolder(PLUGIN_FOLDER) then
             if useStartupOverlay then
@@ -1552,7 +1708,7 @@ local function loadPlugins(useStartupOverlay)
         local pluginFiles = listfiles(PLUGIN_FOLDER)
         local luaFiles = {}
         for _, filePath in ipairs(pluginFiles) do
-            if filePath:match("%.lua$") then
+            if filePath:match("%.lua$") and (not onlyFilePath or filePath:gsub("\\", "/") == onlyFilePath:gsub("\\", "/")) then
                 table.insert(luaFiles, filePath)
             end
         end
@@ -1769,6 +1925,7 @@ local function loadPlugins(useStartupOverlay)
             end
 
             Plugins[plugin.Name] = plugin
+            pluginSourcePaths[plugin.Name] = filePath
             loaded = loaded + 1
             if schedulePanelSave then
                 schedulePanelSave()
@@ -2129,14 +2286,35 @@ TabBar.Parent = MainFrame
 registerThemeObject(TabBar, "TabRail")
 
 local TabLayout = Instance.new("UIListLayout")
-TabLayout.Padding = UDim.new(0, 3)
+TabLayout.Padding = UDim.new(0, 2)
 TabLayout.Parent = TabBar
 
 local TabPadding = Instance.new("UIPadding")
-TabPadding.PaddingTop = UDim.new(0, 7)
+TabPadding.PaddingTop = UDim.new(0, 3)
 TabPadding.PaddingLeft = UDim.new(0, 6)
 TabPadding.PaddingRight = UDim.new(0, 6)
 TabPadding.Parent = TabBar
+
+-- Sidebar search. The search field stays outside the scrolling tab list.
+local SidebarSearch = Instance.new("TextBox")
+SidebarSearch.Name = "PluginSearch"
+SidebarSearch.Size = UDim2.new(0, 114, 0, 24)
+SidebarSearch.Position = UDim2.new(0, 6, 0, 35)
+SidebarSearch.BackgroundColor3 = Color3.fromRGB(31, 35, 41)
+SidebarSearch.BorderColor3 = Color3.fromRGB(84, 99, 115)
+SidebarSearch.BorderSizePixel = 1
+SidebarSearch.TextColor3 = Color3.fromRGB(245, 245, 245)
+SidebarSearch.PlaceholderColor3 = Color3.fromRGB(160, 169, 181)
+SidebarSearch.PlaceholderText = "Search..."
+SidebarSearch.Text = ""
+SidebarSearch.ClearTextOnFocus = false
+SidebarSearch.TextSize = 12
+SidebarSearch.Font = Enum.Font.Arial
+SidebarSearch.ZIndex = 8
+SidebarSearch.Parent = MainFrame
+registerThemeObject(SidebarSearch, "Input")
+TabBar.Position = UDim2.new(0, 0, 0, 90)
+TabBar.Size = UDim2.new(0, 126, 1, -90)
 
 -- Auto-resize the tab bar canvas when tabs are added/removed
 TabLayout:GetPropertyChangedSignal("AbsoluteContentSize"):Connect(function()
@@ -2176,6 +2354,28 @@ end)
 
 local currentTab = nil
 local tabs = {}
+local favoritePlugins = type(Settings.FavoritePlugins) == "table" and Settings.FavoritePlugins or {}
+Settings.FavoritePlugins = favoritePlugins
+local refreshFavoriteWidgets
+local refreshPluginSearch
+local openPluginContextMenu
+local selectPanelTab
+local pluginContextOverlay
+local pluginFolders = type(Settings.PluginFolders) == "table" and Settings.PluginFolders or {}
+local pluginFolderAssignments = type(Settings.PluginFolderAssignments) == "table" and Settings.PluginFolderAssignments or {}
+Settings.PluginFolders = pluginFolders
+Settings.PluginFolderAssignments = pluginFolderAssignments
+local currentFolder = nil
+local refreshFolderNavigation
+local showCreateFolderDialog
+local folderButton
+local loadstringsButton
+local executorButton
+local folderBackButton
+local folderHeading
+local folderContextMenu
+local reservedTabs = {Plugins = true, Settings = true, Favorites = true}
+
 local isMinimized = false
 local function applyTheme(themeName)
     local selectedTheme = ThemePresets[themeName]
@@ -2198,11 +2398,17 @@ local function applyTheme(themeName)
     MinimizeBtn.Position = UDim2.new(1, -53, 0, math.floor((headerHeight - 22) / 2))
     CloseBtn.Size = UDim2.new(0, 24, 0, 22)
     CloseBtn.Position = UDim2.new(1, -27, 0, math.floor((headerHeight - 22) / 2))
-    TabBar.Size = UDim2.new(0, selectedTheme.sidebarWidth, 1, -headerHeight)
-    TabBar.Position = UDim2.new(0, 0, 0, headerHeight)
+    TabBar.Size = UDim2.new(0, selectedTheme.sidebarWidth, 1, -(headerHeight + 60))
+    TabBar.Position = UDim2.new(0, 0, 0, headerHeight + 60)
+    SidebarSearch.Position = UDim2.new(0, 6, 0, headerHeight + 5)
+    SidebarSearch.Size = UDim2.new(0, selectedTheme.sidebarWidth - 12, 0, 24)
+    if folderButton then folderButton.Position = UDim2.fromOffset(selectedTheme.sidebarWidth - 29, headerHeight + 32) end
+    if loadstringsButton then loadstringsButton.Position = UDim2.fromOffset(6, headerHeight + 32) end
+    if folderBackButton then folderBackButton.Position = UDim2.fromOffset(31, headerHeight + 32) end
+    if folderHeading then folderHeading.Position = UDim2.fromOffset(folderBackButton and folderBackButton.Visible and 35 or 8, headerHeight + 34); folderHeading.Size = UDim2.new(0, math.max(0, selectedTheme.sidebarWidth - (folderBackButton and folderBackButton.Visible and 69 or 42)), 0, 19) end
     ContentFrame.Size = UDim2.new(1, -(selectedTheme.sidebarWidth + 10), 1, -(headerHeight + 10))
     ContentFrame.Position = UDim2.new(0, selectedTheme.sidebarWidth + 6, 0, headerHeight + 4)
-    TabLayout.Padding = UDim.new(0, selectedTheme.modern and 4 or 3)
+    TabLayout.Padding = UDim.new(0, selectedTheme.modern and 3 or 2)
     ContentLayout.Padding = UDim.new(0, selectedTheme.modern and 8 or 6)
     ContentPadding.PaddingTop = UDim.new(0, selectedTheme.modern and 8 or 6)
     ContentPadding.PaddingLeft = UDim.new(0, selectedTheme.modern and 8 or 6)
@@ -2314,7 +2520,7 @@ local function createTab(name, icon)
         return tabs[name].button
     end
     local TabButton = Instance.new("TextButton")
-    TabButton.Size = UDim2.new(1, 0, 0, 32)
+    TabButton.Size = UDim2.new(1, 0, 0, 27)
     TabButton.BackgroundColor3 = Color3.fromRGB(66, 70, 75)
     TabButton.BorderColor3 = Color3.fromRGB(38, 42, 47)
     TabButton.BorderSizePixel = 1
@@ -2335,15 +2541,12 @@ local function createTab(name, icon)
     tabs[name] = {button = TabButton, widgets = {}}
     
     TabButton.MouseButton1Click:Connect(function()
-        for _, tab in pairs(tabs) do
-            tab.button.BackgroundColor3 = activeColors.Tab
-            tab.button.TextColor3 = activeColors.Text
-            for _, widget in pairs(tab.widgets) do widget.Visible = false end
+        selectPanelTab(name)
+    end)
+    TabButton.MouseButton2Click:Connect(function()
+        if not reservedTabs[name] and openPluginContextMenu then
+            openPluginContextMenu(name)
         end
-        TabButton.BackgroundColor3 = activeColors.TabActive
-        TabButton.TextColor3 = Color3.fromRGB(255, 255, 255)
-        for _, widget in pairs(tabs[name].widgets) do widget.Visible = true end
-        currentTab = name
     end)
 
     TabButton.MouseEnter:Connect(function()
@@ -2357,8 +2560,623 @@ local function createTab(name, icon)
             TabButton.BackgroundColor3 = activeColors.Tab
         end
     end)
+    if refreshFavoriteWidgets and name ~= "Favorites" and name ~= "Loadstrings" and name ~= "Executor" then task.defer(refreshFavoriteWidgets) end
+    if refreshPluginSearch then task.defer(refreshPluginSearch) end
+    if refreshFolderNavigation then task.defer(refreshFolderNavigation) end
     return TabButton
 end
+
+-- Central tab navigation, favorites, and search. Keep plugin widgets in their original tabs.
+selectPanelTab = function(name)
+    if not tabs[name] then return end
+    if not reservedTabs[name] and pluginFolderAssignments[name] and pluginFolders[pluginFolderAssignments[name]] then
+        currentFolder = pluginFolderAssignments[name]
+    end
+    if refreshFolderNavigation then refreshFolderNavigation() end
+    for tabName, tab in pairs(tabs) do
+        tab.button.BackgroundColor3 = (tabName == name) and activeColors.TabActive or activeColors.Tab
+        tab.button.TextColor3 = (tabName == name) and Color3.fromRGB(255,255,255) or activeColors.Text
+        for _, widget in ipairs(tab.widgets) do
+            if widget and widget.Parent then widget.Visible = tabName == name end
+        end
+    end
+    currentTab = name
+    ContentFrame.CanvasPosition = Vector2.new(0,0)
+end
+
+refreshFavoriteWidgets = function()
+    local favTab = tabs["Favorites"]
+    if not favTab then return end
+    for _, widget in ipairs(favTab.widgets) do
+        if widget and widget.Parent then widget:Destroy() end
+    end
+    table.clear(favTab.widgets)
+    local names = {}
+    for name, enabled in pairs(favoritePlugins) do
+        if enabled and tabs[name] then table.insert(names, name) end
+    end
+    table.sort(names)
+    if #names == 0 then
+        local empty = Instance.new("TextLabel")
+        empty.Size = UDim2.new(1,0,0,56)
+        empty.BackgroundTransparency = 1
+        empty.Text = "No favorites yet.\nRight-click a plugin tab to add one."
+        empty.TextWrapped = true
+        empty.TextColor3 = activeColors.Text
+        empty.TextSize = 12
+        empty.Parent = ContentFrame
+        table.insert(favTab.widgets, empty)
+    else
+        for _, name in ipairs(names) do
+            local shortcut = Instance.new("TextButton")
+            shortcut.Size = UDim2.new(1,0,0,34)
+            shortcut.BackgroundColor3 = activeColors.Surface
+            shortcut.BorderColor3 = activeColors.Primary
+            shortcut.TextColor3 = activeColors.Text
+            shortcut.TextSize = 12
+            shortcut.Font = activeTheme.font
+            shortcut.Text = "★  " .. name .. "    ›"
+            shortcut.Parent = ContentFrame
+            shortcut.MouseButton1Click:Connect(function()
+                selectPanelTab(name)
+            end)
+            shortcut.MouseButton2Click:Connect(function()
+                openPluginContextMenu(name)
+            end)
+            table.insert(favTab.widgets, shortcut)
+        end
+    end
+    for _, widget in ipairs(favTab.widgets) do widget.Visible = currentTab == "Favorites" end
+end
+
+openPluginContextMenu = function(name)
+    if not tabs[name] or name == "Favorites" or name == "Settings" or name == "Plugins" then return end
+    if pluginContextOverlay and pluginContextOverlay.Parent then pluginContextOverlay:Destroy() end
+
+    local cover = Instance.new("TextButton")
+    cover.Name = "PluginContextDismiss"
+    cover.Text = ""
+    cover.AutoButtonColor = false
+    cover.BackgroundTransparency = 1
+    cover.BorderSizePixel = 0
+    cover.Size = UDim2.fromScale(1, 1)
+    cover.ZIndex = 19000
+    cover.Parent = MainFrame
+    pluginContextOverlay = cover
+
+    local menuWidth, menuHeight = 190, 154
+    local guiInset = game:GetService("GuiService"):GetGuiInset()
+    local mouse = UserInputService:GetMouseLocation() - guiInset
+    local relative = mouse - MainFrame.AbsolutePosition
+    local menu = Instance.new("Frame")
+    menu.Name = "PluginContextMenu"
+    menu.Size = UDim2.fromOffset(menuWidth, menuHeight)
+    menu.Position = UDim2.fromOffset(
+        math.clamp(relative.X, 0, math.max(0, MainFrame.AbsoluteSize.X - menuWidth)),
+        math.clamp(relative.Y, 0, math.max(0, MainFrame.AbsoluteSize.Y - menuHeight))
+    )
+    menu.BackgroundColor3 = activeColors.Surface
+    menu.BorderColor3 = activeColors.Border or activeColors.Primary
+    menu.BorderSizePixel = 1
+    menu.ZIndex = 19001
+    menu.Parent = cover
+    registerThemeObject(menu, "Surface")
+
+    local heading = Instance.new("TextLabel")
+    heading.Name = "PluginName"
+    heading.Size = UDim2.new(1, -16, 0, 22)
+    heading.Position = UDim2.fromOffset(8, 3)
+    heading.BackgroundTransparency = 1
+    heading.Font = activeTheme.font
+    heading.Text = name
+    heading.TextTruncate = Enum.TextTruncate.AtEnd
+    heading.TextXAlignment = Enum.TextXAlignment.Left
+    heading.TextColor3 = activeColors.Text
+    heading.TextSize = 11
+    heading.ZIndex = 19002
+    heading.Parent = menu
+    registerThemeObject(heading, "Text")
+
+    local separator = Instance.new("Frame")
+    separator.Size = UDim2.new(1, -12, 0, 1)
+    separator.Position = UDim2.fromOffset(6, 26)
+    separator.BorderSizePixel = 0
+    separator.BackgroundColor3 = activeColors.Primary
+    separator.BackgroundTransparency = 0.55
+    separator.ZIndex = 19002
+    separator.Parent = menu
+    registerThemeObject(separator, "Primary")
+
+    local action = Instance.new("TextButton")
+    action.Name = "ToggleFavorite"
+    action.Size = UDim2.new(1, -12, 0, 27)
+    action.Position = UDim2.fromOffset(6, 30)
+    action.BackgroundColor3 = activeColors.Tab
+    action.BorderSizePixel = 0
+    action.AutoButtonColor = false
+    action.Font = activeTheme.font
+    action.TextXAlignment = Enum.TextXAlignment.Left
+    action.TextColor3 = activeColors.Text
+    action.TextSize = 11
+    action.Text = favoritePlugins[name] and "  ★  Remove favorite" or "  ☆  Add to favorites"
+    action.ZIndex = 19002
+    action.Parent = menu
+    registerThemeObject(action, "Tab")
+    action.MouseEnter:Connect(function()
+        action.BackgroundColor3 = activeColors.TabActive
+    end)
+    action.MouseLeave:Connect(function()
+        action.BackgroundColor3 = activeColors.Tab
+    end)
+
+    cover.MouseButton1Click:Connect(function()
+        if cover.Parent then cover:Destroy() end
+    end)
+    action.MouseButton1Click:Connect(function()
+        if favoritePlugins[name] then
+            favoritePlugins[name] = nil
+        else
+            favoritePlugins[name] = true
+        end
+        schedulePanelSave()
+        refreshFavoriteWidgets()
+        if cover.Parent then cover:Destroy() end
+        createNotification("Favorites", name .. (favoritePlugins[name] and " added" or " removed"), 2, "info")
+    end)
+
+    local moveButton = Instance.new("TextButton")
+    moveButton.Name = "MoveToFolder"
+    moveButton.Size = UDim2.new(1, -12, 0, 27)
+    moveButton.Position = UDim2.fromOffset(6, 60)
+    moveButton.BackgroundColor3 = activeColors.Tab
+    moveButton.BorderSizePixel = 0
+    moveButton.AutoButtonColor = false
+    moveButton.Font = activeTheme.font
+    moveButton.TextXAlignment = Enum.TextXAlignment.Left
+    moveButton.TextColor3 = activeColors.Text
+    moveButton.TextSize = 11
+    moveButton.Text = "  Move to folder  >"
+    moveButton.ZIndex = 19002
+    moveButton.Parent = menu
+    registerThemeObject(moveButton, "Tab")
+    moveButton.MouseEnter:Connect(function() moveButton.BackgroundColor3 = activeColors.TabActive end)
+    moveButton.MouseLeave:Connect(function() moveButton.BackgroundColor3 = activeColors.Tab end)
+    moveButton.MouseButton1Click:Connect(function()
+        local folderNames = {}
+        for folderName, enabled in pairs(pluginFolders) do
+            if enabled then table.insert(folderNames, folderName) end
+        end
+        table.sort(folderNames)
+        local entries = {"Main area"}
+        for _, folderName in ipairs(folderNames) do table.insert(entries, folderName) end
+        local rowHeight = 27
+        local sub = Instance.new("Frame")
+        sub.Name = "FolderChoices"
+        sub.Size = UDim2.fromOffset(190, #entries * rowHeight + 8)
+        local x = menu.Position.X.Offset + menuWidth
+        if x + 190 > MainFrame.AbsoluteSize.X then x = menu.Position.X.Offset - 190 end
+        sub.Position = UDim2.fromOffset(math.max(0, x), math.clamp(menu.Position.Y.Offset + 40, 0, math.max(0, MainFrame.AbsoluteSize.Y - sub.Size.Y.Offset)))
+        sub.BackgroundColor3 = activeColors.Surface
+        sub.BorderColor3 = activeColors.Border or activeColors.Primary
+        sub.BorderSizePixel = 1
+        sub.ZIndex = 19005
+        sub.Parent = cover
+        registerThemeObject(sub, "Surface")
+        for index, folderName in ipairs(entries) do
+            local option = Instance.new("TextButton")
+            option.Size = UDim2.new(1, -8, 0, rowHeight - 2)
+            option.Position = UDim2.fromOffset(4, 4 + (index - 1) * rowHeight)
+            option.BackgroundColor3 = activeColors.Tab
+            option.BorderSizePixel = 0
+            option.Font = activeTheme.font
+            option.TextSize = 11
+            option.TextColor3 = activeColors.Text
+            option.Text = folderName
+            option.ZIndex = 19006
+            option.Parent = sub
+            registerThemeObject(option, "Tab")
+            option.MouseButton1Click:Connect(function()
+                pluginFolderAssignments[name] = folderName == "Main area" and nil or folderName
+                schedulePanelSave()
+                if cover.Parent then cover:Destroy() end
+                if refreshFolderNavigation then refreshFolderNavigation() end
+                createNotification("Folders", name .. " moved to " .. folderName, 2, "success")
+            end)
+        end
+    end)
+
+    local reloadButton = Instance.new("TextButton")
+    reloadButton.Name = "ReloadPlugin"
+    reloadButton.Size = UDim2.new(1, -12, 0, 27)
+    reloadButton.Position = UDim2.fromOffset(6, 90)
+    reloadButton.BackgroundColor3 = activeColors.Tab
+    reloadButton.BorderSizePixel = 0
+    reloadButton.AutoButtonColor = false
+    reloadButton.Font = activeTheme.font
+    reloadButton.TextXAlignment = Enum.TextXAlignment.Left
+    reloadButton.TextColor3 = activeColors.Text
+    reloadButton.TextSize = 11
+    reloadButton.Text = "  Reload plugin"
+    reloadButton.ZIndex = 19002
+    reloadButton.Parent = menu
+    registerThemeObject(reloadButton, "Tab")
+    reloadButton.MouseEnter:Connect(function() reloadButton.BackgroundColor3 = activeColors.TabActive end)
+    reloadButton.MouseLeave:Connect(function() reloadButton.BackgroundColor3 = activeColors.Tab end)
+    reloadButton.MouseButton1Click:Connect(function()
+        if cover.Parent then cover:Destroy() end
+        local filePath = pluginSourcePaths[name]
+        if not filePath or not isfile or not isfile(filePath) then
+            createNotification("Reload plugin", "Saved plugin file not found: " .. name, 4, "error")
+            return
+        end
+        -- Cleanup calls plugin.Cleanup and releases resources registered with its scoped API.
+        -- Arbitrary side effects outside that API cannot be forcibly reversed by Luau.
+        cleanupPluginRuntime(name, Plugins[name])
+        createNotification("Reload plugin", "Reloading " .. name .. " from disk...", 2, "info")
+        loadPlugins(false, filePath)
+    end)
+
+    local deleteButton = Instance.new("TextButton")
+    deleteButton.Name = "DeletePlugin"
+    deleteButton.Size = UDim2.new(1, -12, 0, 27)
+    deleteButton.Position = UDim2.fromOffset(6, 120)
+    deleteButton.BackgroundColor3 = activeColors.Tab
+    deleteButton.BorderSizePixel = 0
+    deleteButton.AutoButtonColor = false
+    deleteButton.Font = activeTheme.font
+    deleteButton.TextXAlignment = Enum.TextXAlignment.Left
+    deleteButton.TextColor3 = activeColors.Danger or Color3.fromRGB(230, 100, 100)
+    deleteButton.TextSize = 11
+    deleteButton.Text = "  Delete plugin..."
+    deleteButton.ZIndex = 19002
+    deleteButton.Parent = menu
+    registerThemeObject(deleteButton, "Tab")
+    deleteButton.MouseEnter:Connect(function() deleteButton.BackgroundColor3 = activeColors.TabActive end)
+    deleteButton.MouseLeave:Connect(function() deleteButton.BackgroundColor3 = activeColors.Tab end)
+    deleteButton.MouseButton1Click:Connect(function()
+        if cover.Parent then cover:Destroy() end
+        task.spawn(function()
+            local decision = createPluginDecisionDialog(
+                "Delete plugin?",
+                name,
+                "This removes the plugin's Lua file from your executor's plugin folder and unloads it from the panel. This cannot be undone.",
+                {
+                    {label = "Cancel", value = "cancel", color = Color3.fromRGB(75, 83, 92)},
+                    {label = "Delete", value = "delete", color = Color3.fromRGB(170, 55, 55)},
+                }
+            )
+            if decision ~= "delete" then return end
+            local filePath = pluginSourcePaths[name]
+            if not filePath then
+                local candidate = PLUGIN_FOLDER .. "/" .. name:gsub("%s+", "_"):lower() .. ".lua"
+                if isfile and isfile(candidate) then filePath = candidate end
+            end
+            if not filePath or not isfile or not isfile(filePath) then
+                createNotification("Delete plugin", "Cannot find the source file for " .. name, 4, "error")
+                return
+            end
+            local remover = delfile or deletefile
+            if type(remover) ~= "function" then
+                createNotification("Delete plugin", "Executor does not support delfile", 4, "error")
+                return
+            end
+            local ok, err = pcall(remover, filePath)
+            if not ok then
+                createNotification("Delete plugin", "Could not delete file: " .. tostring(err), 4, "error")
+                return
+            end
+            cleanupPluginRuntime(name, Plugins[name])
+            pluginSourcePaths[name] = nil
+            favoritePlugins[name] = nil
+            pluginFolderAssignments[name] = nil
+            schedulePanelSave()
+            if updatePluginHub then updatePluginHub() end
+            if refreshFolderNavigation then refreshFolderNavigation() end
+            createNotification("Delete plugin", name .. " deleted", 3, "success")
+        end)
+    end)
+end
+
+-- Folder navigation lives in the sidebar, while the actual plugin widgets stay in their original tabs.
+local folderTools = Instance.new("Frame")
+folderTools.Name = "FolderTools"
+folderTools.BackgroundTransparency = 1
+folderTools.Size = UDim2.new(0, 126, 0, 29)
+folderTools.Position = UDim2.fromOffset(0, 0)
+folderTools.Parent = MainFrame
+
+folderButton = Instance.new("TextButton")
+folderButton.Name = "CreateFolder"
+folderButton.Size = UDim2.fromOffset(22, 22)
+folderButton.Position = UDim2.fromOffset(activeTheme.sidebarWidth - 29, activeTheme.headerHeight + 32)
+folderButton.Text = ""
+folderButton.BackgroundColor3 = activeColors.Tab
+folderButton.BorderColor3 = activeColors.Border or activeColors.Primary
+folderButton.Parent = MainFrame
+registerThemeObject(folderButton, "Tab")
+-- A subtle folder silhouette using Roblox UI primitives; the empty areas stay transparent.
+local function updateFolderIconTint()
+    local textColor = activeColors.MutedText or activeColors.Text or Color3.fromRGB(185, 180, 175)
+    local softColor = textColor:Lerp(activeColors.Tab or Color3.fromRGB(30, 30, 30), 0.18)
+    if folderLip then folderLip.BackgroundColor3 = softColor end
+    if folderBody then folderBody.BackgroundColor3 = softColor end
+end
+local folderLip
+local folderBody
+folderLip = Instance.new("Frame")
+folderLip.Size = UDim2.fromOffset(8, 3)
+folderLip.Position = UDim2.fromOffset(4, 6)
+folderLip.BorderSizePixel = 0
+folderLip.BackgroundColor3 = activeColors.MutedText or Color3.fromRGB(175, 170, 165)
+folderLip.BackgroundTransparency = 0.18
+folderLip.Parent = folderButton
+-- Keep the surrounding area fully transparent.
+folderBody = Instance.new("Frame")
+folderBody.Size = UDim2.fromOffset(15, 10)
+folderBody.Position = UDim2.fromOffset(4, 9)
+folderBody.BorderSizePixel = 0
+folderBody.BackgroundColor3 = activeColors.MutedText or Color3.fromRGB(175, 170, 165)
+folderBody.BackgroundTransparency = 0.18
+folderBody.Parent = folderButton
+-- Keep the surrounding area fully transparent.
+local folderCorner = Instance.new("UICorner")
+folderCorner.CornerRadius = UDim.new(0, 2)
+folderCorner.Parent = folderBody
+updateFolderIconTint()
+
+-- Refresh icon tint when a theme or color scheme changes.
+task.spawn(function()
+    local lastColor
+    while folderButton and folderButton.Parent do
+        local c = activeColors.MutedText or activeColors.Text
+        if c ~= lastColor then
+            lastColor = c
+            updateFolderIconTint()
+        end
+        task.wait(0.5)
+    end
+end)
+
+folderBackButton = Instance.new("TextButton")
+folderBackButton.Name = "FolderBack"
+folderBackButton.Position = UDim2.fromOffset(31, activeTheme.headerHeight + 32)
+folderBackButton.Size = UDim2.fromOffset(22, 22)
+folderBackButton.Text = "<"
+folderBackButton.TextSize = 15
+folderBackButton.Font = activeTheme.boldFont
+folderBackButton.BackgroundColor3 = activeColors.Tab
+folderBackButton.TextColor3 = activeColors.Text
+folderBackButton.Parent = MainFrame
+registerThemeObject(folderBackButton, "Tab")
+folderHeading = Instance.new("TextLabel")
+folderHeading.Name = "FolderPath"
+folderHeading.Position = UDim2.fromOffset(8, activeTheme.headerHeight + 34)
+folderHeading.Size = UDim2.new(0, math.max(0, activeTheme.sidebarWidth - 42), 0, 19)
+folderHeading.BackgroundTransparency = 1
+folderHeading.TextColor3 = activeColors.Text
+folderHeading.Font = activeTheme.font
+folderHeading.TextSize = 11
+folderHeading.TextTruncate = Enum.TextTruncate.AtEnd
+folderHeading.TextXAlignment = Enum.TextXAlignment.Left
+folderHeading.Parent = MainFrame
+registerThemeObject(folderHeading, "Text")
+
+local folderRows = {}
+local function clearFolderRows()
+    for _, row in ipairs(folderRows) do if row.Parent then row:Destroy() end end
+    table.clear(folderRows)
+end
+local function createFolderRow(name)
+    local row = Instance.new("TextButton")
+    row.Name = "Folder_" .. name
+    row.Size = UDim2.new(1, 0, 0, 27)
+    row.Text = "  " .. name .. "  >"
+    row.TextSize = 12
+    row.Font = activeTheme.font
+    row.TextXAlignment = Enum.TextXAlignment.Left
+    row.TextColor3 = activeColors.Text
+    row.BackgroundColor3 = activeColors.Tab
+    row.BorderColor3 = activeColors.Border or activeColors.Primary
+    row.Parent = TabBar
+    registerThemeObject(row, "Tab")
+    table.insert(folderRows, row)
+    row.MouseButton1Click:Connect(function()
+        currentFolder = name
+        refreshFolderNavigation()
+    end)
+    row.MouseButton2Click:Connect(function()
+        if pluginContextOverlay and pluginContextOverlay.Parent then pluginContextOverlay:Destroy() end
+        local cover = Instance.new("TextButton")
+        cover.Name = "FolderContextDismiss"
+        cover.Size = UDim2.fromScale(1,1)
+        cover.BackgroundTransparency = 1
+        cover.Text = ""
+        cover.ZIndex = 19000
+        cover.Parent = MainFrame
+        pluginContextOverlay = cover
+        local mouse = UserInputService:GetMouseLocation() - game:GetService("GuiService"):GetGuiInset()
+        local pos = mouse - MainFrame.AbsolutePosition
+        local menu = Instance.new("TextButton")
+        menu.Size = UDim2.fromOffset(165, 28)
+        menu.Position = UDim2.fromOffset(math.clamp(pos.X,0,math.max(0,MainFrame.AbsoluteSize.X-165)),math.clamp(pos.Y,0,math.max(0,MainFrame.AbsoluteSize.Y-28)))
+        menu.Text = "Delete empty folder"
+        menu.Font = activeTheme.font
+        menu.TextSize = 11
+        menu.TextColor3 = activeColors.Text
+        menu.BackgroundColor3 = activeColors.Tab
+        menu.ZIndex = 19001
+        menu.Parent = cover
+        registerThemeObject(menu,"Tab")
+        cover.MouseButton1Click:Connect(function() cover:Destroy() end)
+        menu.MouseButton1Click:Connect(function()
+            for pluginName, folderName in pairs(pluginFolderAssignments) do
+                if folderName == name and tabs[pluginName] then
+                    createNotification("Folders", "Move plugins out before deleting this folder", 3, "warning")
+                    cover:Destroy()
+                    return
+                end
+            end
+            pluginFolders[name] = nil
+            if currentFolder == name then currentFolder = nil end
+            schedulePanelSave()
+            cover:Destroy()
+            refreshFolderNavigation()
+        end)
+    end)
+end
+
+refreshFolderNavigation = function()
+    if currentFolder and not pluginFolders[currentFolder] then currentFolder = nil end
+    clearFolderRows()
+    local names = {}
+    if not currentFolder then
+        for name, exists in pairs(pluginFolders) do if exists then table.insert(names, name) end end
+        table.sort(names)
+        for _, name in ipairs(names) do createFolderRow(name) end
+    end
+    local query = SidebarSearch.Text:lower():gsub("^%s+", ""):gsub("%s+$", "")
+    for name, tab in pairs(tabs) do
+        local assigned = pluginFolderAssignments[name]
+        if assigned and not pluginFolders[assigned] then assigned = nil end
+        local inFolder = reservedTabs[name] and currentFolder == nil or (not reservedTabs[name] and assigned == currentFolder)
+        local matches = query == "" or name:lower():find(query, 1, true) ~= nil
+        if query ~= "" and not matches then
+            for _, widget in ipairs(tab.widgets) do
+                if widget and widget.Parent then
+                    for _, child in ipairs(widget:GetDescendants()) do
+                        if (child:IsA("TextLabel") or child:IsA("TextButton")) and child.Text:lower():find(query,1,true) then matches = true break end
+                    end
+                end
+                if matches then break end
+            end
+        end
+        tab.button.Visible = (name ~= "Loadstrings" and name ~= "Executor" and inFolder and matches)
+    end
+    for _, row in ipairs(folderRows) do
+        row.Visible = query == "" or row.Name:sub(8):lower():find(query,1,true) ~= nil
+    end
+    folderBackButton.Visible = currentFolder ~= nil
+    folderHeading.Text = currentFolder or "Library"
+    local headingLeft = currentFolder and 35 or 8
+    folderHeading.Position = UDim2.fromOffset(headingLeft, activeTheme.headerHeight + 34)
+    folderHeading.Size = UDim2.new(0, math.max(0, activeTheme.sidebarWidth - headingLeft - 34), 0, 19)
+    if currentTab and tabs[currentTab] and not tabs[currentTab].button.Visible then
+        -- Keep the existing tab's widgets until the user chooses another tab.
+    end
+end
+
+showCreateFolderDialog = function()
+    local overlay = Instance.new("Frame")
+    overlay.Size = UDim2.fromScale(1,1)
+    overlay.BackgroundColor3 = Color3.new(0,0,0)
+    overlay.BackgroundTransparency = 0.25
+    overlay.ZIndex = 19500
+    overlay.Parent = MainFrame
+    local card = Instance.new("Frame")
+    card.Size = UDim2.fromOffset(230, 118)
+    card.Position = UDim2.new(0.5,-115,0.5,-59)
+    card.BackgroundColor3 = activeColors.Surface
+    card.BorderColor3 = activeColors.Primary
+    card.ZIndex = 19501
+    card.Parent = overlay
+    registerThemeObject(card,"Surface")
+    local prompt = Instance.new("TextLabel")
+    prompt.Size = UDim2.new(1,-12,0,25)
+    prompt.Position = UDim2.fromOffset(6,5)
+    prompt.Text = "New plugin folder"
+    prompt.TextColor3 = activeColors.Text
+    prompt.Font = activeTheme.boldFont
+    prompt.TextSize = 12
+    prompt.BackgroundTransparency = 1
+    prompt.ZIndex = 19502
+    prompt.Parent = card
+    registerThemeObject(prompt,"Text")
+    local input = Instance.new("TextBox")
+    input.Size = UDim2.new(1,-16,0,27)
+    input.Position = UDim2.fromOffset(8,36)
+    input.PlaceholderText = "Folder name"
+    input.Text = ""
+    input.ClearTextOnFocus = false
+    input.TextColor3 = activeColors.Text
+    input.BackgroundColor3 = activeColors.Input
+    input.Font = activeTheme.font
+    input.TextSize = 12
+    input.ZIndex = 19502
+    input.Parent = card
+    registerThemeObject(input,"Input")
+    local function button(text, x, callback)
+        local b = Instance.new("TextButton")
+        b.Size = UDim2.fromOffset(100,26)
+        b.Position = UDim2.fromOffset(x,78)
+        b.Text = text
+        b.Font = activeTheme.font
+        b.TextSize = 12
+        b.BackgroundColor3 = activeColors.Tab
+        b.TextColor3 = activeColors.Text
+        b.ZIndex = 19502
+        b.Parent = card
+        registerThemeObject(b,"Tab")
+        b.MouseButton1Click:Connect(callback)
+    end
+    button("Cancel",8,function() overlay:Destroy() end)
+    local function submit()
+        local name = input.Text:gsub("^%s+", ""):gsub("%s+$", "")
+        if #name == 0 or #name > 28 or reservedTabs[name] or pluginFolders[name] or name:find("[/\\]") then
+            createNotification("Folders", "Choose a unique folder name (1-28 characters)", 3, "warning")
+            return
+        end
+        pluginFolders[name] = true
+        schedulePanelSave()
+        overlay:Destroy()
+        refreshFolderNavigation()
+        createNotification("Folders", "Created " .. name, 2, "success")
+    end
+    button("Create",122,submit)
+    input.FocusLost:Connect(function(enter) if enter then submit() end end)
+    input:CaptureFocus()
+end
+-- Separate Loadstrings shortcut, on the opposite side of the Create Folder button.
+loadstringsButton = Instance.new("TextButton")
+loadstringsButton.Name = "OpenLoadstrings"
+loadstringsButton.Size = UDim2.fromOffset(22, 22)
+loadstringsButton.Position = UDim2.fromOffset(6, activeTheme.headerHeight + 32)
+loadstringsButton.Text = "<>"
+loadstringsButton.TextSize = 11
+loadstringsButton.Font = activeTheme.boldFont
+loadstringsButton.BackgroundColor3 = activeColors.Tab
+loadstringsButton.TextColor3 = activeColors.MutedText or activeColors.Text
+loadstringsButton.BorderColor3 = activeColors.Border or activeColors.Primary
+loadstringsButton.Parent = MainFrame
+loadstringsButton.Visible = false -- Keep internal tab wiring, but hide shortcut until the UI is ready.
+registerThemeObject(loadstringsButton, "Tab")
+loadstringsButton.MouseButton1Click:Connect(function()
+    selectPanelTab("Loadstrings")
+end)
+local openExecutorWorkspace
+folderButton.MouseButton1Click:Connect(showCreateFolderDialog)
+folderBackButton.MouseButton1Click:Connect(function()
+    currentFolder = nil
+    refreshFolderNavigation()
+end)
+TabBar.InputBegan:Connect(function(input)
+    if input.UserInputType == Enum.UserInputType.MouseButton2 then
+        local hovered = UserInputService:GetMouseLocation() - game:GetService("GuiService"):GetGuiInset()
+        local overTab = false
+        for _, child in ipairs(TabBar:GetChildren()) do
+            if child:IsA("GuiButton") and child.Visible then
+                local p, z = child.AbsolutePosition, child.AbsoluteSize
+                if hovered.X >= p.X and hovered.X <= p.X + z.X and hovered.Y >= p.Y and hovered.Y <= p.Y + z.Y then overTab = true break end
+            end
+        end
+        if not overTab then showCreateFolderDialog() end
+    end
+end)
+refreshFolderNavigation()
+
+refreshPluginSearch = function()
+    refreshFolderNavigation()
+end
+SidebarSearch:GetPropertyChangedSignal("Text"):Connect(refreshPluginSearch)
 
 -- Toggle widget (FIXED - properly loads saved state)
 -- Shared toggle keybinds (one keyboard listener for the whole panel).
@@ -2410,7 +3228,7 @@ local function attachToggleKeybind(frame, label, toggleButton, storage, path, en
     end
     refresh()
     toggleBindCounter += 1
-    local entry = {frame = frame, key = assigned, reload = function()
+    local entry = {frame = frame, label = tostring(label), key = assigned, reload = function()
         local changed = reloadSavedBinding()
         if changed then refresh() end
         return assigned
@@ -2440,6 +3258,14 @@ local function attachToggleKeybind(frame, label, toggleButton, storage, path, en
         refresh()
         createNotification("Keybind removed", tostring(label) .. ": Unbound", 2, "info")
     end)
+    entry.clear = function()
+        if pendingToggleBind == entry then pendingToggleBind = nil end
+        assigned = nil
+        entry.key = nil
+        writeSettingPath(storage, keyPath, nil)
+        schedulePanelSave()
+        refresh()
+    end
     entry.capture = function(input)
         if input.KeyCode == Enum.KeyCode.Escape then
             pendingToggleBind = nil
@@ -2453,10 +3279,45 @@ local function attachToggleKeybind(frame, label, toggleButton, storage, path, en
         else
             return
         end
+        local candidate = assigned
+        local conflicts = {}
+        if candidate then
+            for _, other in ipairs(toggleKeybinds) do
+                if other ~= entry and other.frame.Parent and other.reload() == candidate then
+                    table.insert(conflicts, other)
+                end
+            end
+        end
+        pendingToggleBind = nil
+        if #conflicts > 0 then
+            -- Do not persist the new key until the user resolves the conflict.
+            assigned = type(readSettingPath(storage, keyPath)) == "string" and readSettingPath(storage, keyPath) or nil
+            refresh()
+            task.spawn(function()
+                local labels = {}
+                for _, other in ipairs(conflicts) do table.insert(labels, other.label) end
+                local choice = createPluginDecisionDialog(
+                    "Keybind conflict",
+                    candidate .. " is already assigned.",
+                    "Used by: " .. table.concat(labels, ", ") .. "\n\nReplace their keybinds or keep the existing assignments?",
+                    {{label = "Replace existing", value = "replace"}, {label = "Cancel", value = "cancel", color = Color3.fromRGB(153,54,54)}}
+                )
+                if choice ~= "replace" or not frame.Parent then return end
+                for _, other in ipairs(conflicts) do
+                    if other.frame.Parent and other.key == candidate then other.clear() end
+                end
+                assigned = candidate
+                entry.key = assigned
+                writeSettingPath(storage, keyPath, assigned)
+                schedulePanelSave()
+                refresh()
+                createNotification("Keybind updated", tostring(label) .. ": " .. assigned, 2, "success")
+            end)
+            return
+        end
         entry.key = assigned
         writeSettingPath(storage, keyPath, assigned)
         schedulePanelSave()
-        pendingToggleBind = nil
         refresh()
         createNotification("Keybind updated", tostring(label) .. ": " .. (assigned or "Unbound"), 2, "info")
     end
@@ -3000,10 +3861,7 @@ local function createWindow(title: string, width: number?, height: number?, wind
         WindowContent.CanvasSize = UDim2.new(0, 0, 0, WindowContentLayout.AbsoluteContentSize.Y + 10)
     end)
     
-    -- Make window draggable
-    local windowDragging = false
-    local windowDragInput, windowMousePos, windowFramePos
-    
+    -- Bring windows to the front before starting a smooth drag.
     -- Bring window to front when clicked
     local function bringToFront()
         windowZIndex = windowZIndex + 10
@@ -3022,53 +3880,31 @@ local function createWindow(title: string, width: number?, height: number?, wind
         end
     end
     
-    -- Make window draggable and bring to front
-    local windowDragging = false
-    local windowDragInput, windowMousePos, windowFramePos
-    
-    WindowTopBar.InputBegan:Connect(function(input)
-        if input.UserInputType == Enum.UserInputType.MouseButton1 then
-            bringToFront()
-            windowDragging = true
-            windowMousePos = input.Position
-            windowFramePos = WindowFrame.Position
-        end
-    end)
-    
-    -- Also bring to front when clicking anywhere on the window
+    local windowIsMinimized = false
+    local originalHeight = height or 400
+    attachSmoothDrag(WindowTopBar, WindowFrame, connections, bringToFront)
+    --[[ Resize feature temporarily disabled; implementation retained.
+    attachWindowResize(WindowFrame, 240, 160, connections, function(w, h)
+        if not windowIsMinimized then originalHeight = h end
+    end, bringToFront)
+    ]]
     WindowFrame.InputBegan:Connect(function(input)
         if input.UserInputType == Enum.UserInputType.MouseButton1 then
             bringToFront()
         end
     end)
-    
-    local dragConnection = UserInputService.InputChanged:Connect(function(input)
-        if windowDragging and input.UserInputType == Enum.UserInputType.MouseMovement then
-            local delta = input.Position - windowMousePos
-            WindowFrame.Position = UDim2.new(windowFramePos.X.Scale, windowFramePos.X.Offset + delta.X, windowFramePos.Y.Scale, windowFramePos.Y.Offset + delta.Y)
-        end
-    end)
-    
-    local dragEndConnection = UserInputService.InputEnded:Connect(function(input)
-        if input.UserInputType == Enum.UserInputType.MouseButton1 then
-            windowDragging = false
-        end
-    end)
-    
-    table.insert(connections, dragConnection)
-    table.insert(connections, dragEndConnection)
-    
+
     -- Minimize functionality
-    local windowIsMinimized = false
-    local originalHeight = height or 400
     WindowMinimizeBtn.MouseButton1Click:Connect(function()
         windowIsMinimized = not windowIsMinimized
         if windowIsMinimized then
-            WindowFrame.Size = UDim2.new(0, width or 300, 0, 25)
+            WindowFrame:SetAttribute("SimbaResizeDisabled", true)
+            WindowFrame.Size = UDim2.fromOffset(WindowFrame.AbsoluteSize.X, 25)
             WindowContent.Visible = false
             WindowMinimizeBtn.Text = "+"
         else
-            WindowFrame.Size = UDim2.new(0, width or 300, 0, originalHeight)
+            WindowFrame.Size = UDim2.fromOffset(WindowFrame.AbsoluteSize.X, originalHeight)
+            WindowFrame:SetAttribute("SimbaResizeDisabled", false)
             WindowContent.Visible = true
             WindowMinimizeBtn.Text = "_"
         end
@@ -3076,9 +3912,7 @@ local function createWindow(title: string, width: number?, height: number?, wind
     
     -- Close window
     WindowCloseBtn.MouseButton1Click:Connect(function()
-        dragConnection:Disconnect()
-        dragEndConnection:Disconnect()
-        WindowFrame:Destroy()
+        if WindowFrame.Parent then WindowFrame:Destroy() end
     end)
     
     -- API for adding elements to window
@@ -3245,12 +4079,6 @@ local function createWindow(title: string, width: number?, height: number?, wind
         end,
         
         Destroy = function()
-            if dragConnection.Connected then
-                dragConnection:Disconnect()
-            end
-            if dragEndConnection.Connected then
-                dragEndConnection:Disconnect()
-            end
             if WindowFrame.Parent then
                 WindowFrame:Destroy()
             end
@@ -3481,13 +4309,16 @@ local function createSlider(tabName: string, text: string, min: number, max: num
     SliderButton.Parent = SliderBar
     
     local dragging = false
-    local function updateSlider(input)
-        local pos = math.clamp((input.Position.X - SliderBar.AbsolutePosition.X) / SliderBar.AbsoluteSize.X, 0, 1)
-        local rawValue = min + (max - min) * pos
-        
-        -- Round to nearest step
-        local newValue = math.floor((rawValue / step) + 0.5) * step
-        newValue = math.clamp(newValue, min, max)
+    local function updateSlider(input, exactValue)
+        local newValue
+        if exactValue ~= nil then
+            -- Wheel adjustments must not round-trip through screen pixels.
+            newValue = math.clamp(exactValue, min, max)
+        else
+            local pos = math.clamp((input.Position.X - SliderBar.AbsolutePosition.X) / SliderBar.AbsoluteSize.X, 0, 1)
+            local rawValue = min + (max - min) * pos
+            newValue = math.clamp(math.floor((rawValue / step) + 0.5) * step, min, max)
+        end
         currentValue = newValue
         
         SliderFill.Size = UDim2.new((newValue - min) / (max - min), 0, 1, 0)
@@ -3555,9 +4386,8 @@ local function createSlider(tabName: string, text: string, min: number, max: num
             local index = math.floor((currentValue - min) / step + 0.5)
             local nextValue = math.clamp(min + (index + direction) * step, min, max)
             if math.abs(nextValue - currentValue) < 0.000001 then return end
-            local fakeX = SliderBar.AbsolutePosition.X
-                + ((nextValue - min) / (max - min)) * SliderBar.AbsoluteSize.X
-            updateSlider({Position = Vector3.new(fakeX, 0, 0)})
+            -- Apply exactly one configured step, independent of slider width.
+            updateSlider(nil, nextValue)
         end,
     }
     table.insert(wheelSliderRegistry, wheelEntry)
@@ -3780,6 +4610,7 @@ local function destroyPluginTab(pluginName)
         end
     end
     tabs[pluginName] = nil
+    if refreshFavoriteWidgets then refreshFavoriteWidgets() end
 end
 
 cleanupPluginRuntime = function(pluginName, plugin)
@@ -3813,7 +4644,7 @@ cleanupPluginRuntime = function(pluginName, plugin)
         end
         pluginAPIs[pluginName] = nil
     end
-    if pluginName ~= "Plugins" and pluginName ~= "Settings" then
+    if pluginName ~= "Plugins" and pluginName ~= "Settings" and pluginName ~= "Favorites" then
         destroyPluginTab(pluginName)
     end
     for index = #connections, 1, -1 do
@@ -3825,17 +4656,349 @@ cleanupPluginRuntime = function(pluginName, plugin)
     pruneThemeObjects({})
     refreshThemeGradients()
     Plugins[pluginName] = nil
+    if refreshFolderNavigation then refreshFolderNavigation() end
 end
 
 -- Create tabs
 createTab("Plugins", "")
 createTab("Settings", "")
+createTab("Favorites", "★")
+-- Hidden from normal plugin list; accessed through the small <> toolbar button.
+tabs["Loadstrings"] = {button = loadstringsButton, widgets = {}}
+reservedTabs.Loadstrings = true
+reservedTabs.Executor = true
+
+refreshFavoriteWidgets()
+refreshFolderNavigation()
 setStartupProgress(0.6, "Building the control panel...", "Creating plugin manager and settings controls")
 task.wait()
 
 -- Keep a panel-construction error from leaving the full-screen loader stranded.
 local startupBuildOk, startupBuildError = pcall(function()
 -- Plugin management
+-- Loadstrings area. Manifest is a Lua file you control on your own website.
+-- Only scripts explicitly clicked by the user are fetched and executed.
+local manifestURL = "https://www.simbastudios.win/WobbleScotch/Assets/loadstrings.lua"
+local loaderRoot = Instance.new("Frame")
+loaderRoot.Name = "LoadstringsLibrary"
+loaderRoot.Size = UDim2.new(1, -10, 0, 340)
+loaderRoot.BackgroundTransparency = 1
+loaderRoot.Visible = false
+loaderRoot.LayoutOrder = 1
+loaderRoot.Parent = ContentFrame
+table.insert(tabs.Loadstrings.widgets, loaderRoot)
+
+local function loaderText(text, y, height, size)
+    local t = Instance.new("TextLabel")
+    t.Size = UDim2.new(1, 0, 0, height)
+    t.Position = UDim2.fromOffset(0, y)
+    t.BackgroundTransparency = 1
+    t.TextXAlignment = Enum.TextXAlignment.Left
+    t.TextYAlignment = Enum.TextYAlignment.Center
+    t.TextWrapped = true
+    t.Text = text
+    t.TextSize = size or 12
+    t.Font = activeTheme.font
+    t.TextColor3 = activeColors.Text
+    t.Parent = loaderRoot
+    registerThemeObject(t, "Text")
+    return t
+end
+loaderText("Remote Loadstrings", 0, 28, 15)
+loaderText("Only run code from sources you trust. Nothing runs automatically.", 29, 35, 11)
+loaderText("Source: " .. manifestURL, 66, 33, 10)
+local loaderStatus = loaderText("Press Refresh to fetch your list.", 177, 30, 11)
+local loaderRows = {}
+local function clearLoaderRows()
+    for _, obj in ipairs(loaderRows) do obj:Destroy() end
+    table.clear(loaderRows)
+end
+local function loaderButton(label, x, y, width, callback)
+    local b = Instance.new("TextButton")
+    b.Size = UDim2.new(width, -6, 0, 27)
+    b.Position = UDim2.new(x, 0, 0, y)
+    b.Text = label
+    b.TextSize = 11
+    b.Font = activeTheme.font
+    b.TextColor3 = activeColors.Text
+    b.BackgroundColor3 = activeColors.Tab
+    b.Parent = loaderRoot
+    registerThemeObject(b, "Tab")
+    b.MouseButton1Click:Connect(callback)
+    return b
+end
+local function fetchRemote(url)
+    if type(url) ~= "string" or not url:match("^https://") then
+        error("Only HTTPS URLs are supported")
+    end
+    return game:HttpGet(url)
+end
+local function refreshLoadstrings()
+    local url = manifestURL
+    clearLoaderRows()
+    loaderStatus.Text = "Fetching manifest..."
+    task.spawn(function()
+        local ok, result = pcall(function()
+            local source = fetchRemote(url)
+            -- The manifest is executable Lua: host it only on a website you control.
+            local fn, compileError = loadstring(source)
+            if not fn then error(compileError) end
+            local entries = fn()
+            if type(entries) ~= "table" then error("Manifest must return a Lua table") end
+            return entries
+        end)
+        if not loaderRoot.Parent then return end
+        if not ok then
+            loaderStatus.Text = "Failed: " .. tostring(result):sub(1, 120)
+            return
+        end
+        local entries = result
+        local count = 0
+        for i, entry in ipairs(entries) do
+            if type(entry) == "table" and type(entry.name) == "string" and type(entry.url) == "string" and entry.url:match("^https://") then
+                local y = 212 + count * 37
+                local b = loaderButton("Run  " .. entry.name, 0, y, 1, function()
+                    loaderStatus.Text = "Loading " .. entry.name .. "..."
+                    task.spawn(function()
+                        local success, err = pcall(function()
+                            local source = fetchRemote(entry.url)
+                            local fn, compileError = loadstring(source)
+                            if not fn then error(compileError) end
+                            fn()
+                        end)
+                        if loaderRoot.Parent then
+                            loaderStatus.Text = success and ("Executed: " .. entry.name) or ("Error: " .. tostring(err):sub(1, 120))
+                        end
+                    end)
+                end)
+                table.insert(loaderRows, b)
+                count += 1
+            end
+        end
+        loaderStatus.Text = "Loaded " .. count .. " entries. Click one to run it."
+        loaderRoot.Size = UDim2.new(1, -10, 0, math.max(340, 220 + count * 37))
+    end)
+end
+loaderButton("Refresh list", 0, 108, 0.5, refreshLoadstrings)
+executorButton = loaderButton("Open Executor", 0.5, 108, 0.5, function()
+    if openExecutorWorkspace then openExecutorWorkspace() end
+end)
+executorButton.Name = "OpenExecutorFromLoadstrings"
+loaderButton("Back to Plugins", 0, 143, 1, function()
+    currentFolder = nil
+    selectPanelTab("Plugins")
+end)
+
+-- Built-in executor workspace. Scripts only run when Execute is clicked.
+local executorRoot = Instance.new("Frame")
+executorRoot.Name = "ExecutorWorkspace"
+executorRoot.Size = UDim2.new(1, -18, 1, -16)
+executorRoot.BackgroundTransparency = 1
+executorRoot.Visible = false
+executorRoot.LayoutOrder = 1
+executorRoot.Parent = ScreenGui
+
+
+local function execElement(className, props, role)
+    local obj = Instance.new(className)
+    for key, value in pairs(props) do obj[key] = value end
+    obj.Parent = executorRoot
+    obj.ZIndex = 110
+    if role then registerThemeObject(obj, role) end
+    return obj
+end
+local executorTitle = execElement("TextLabel", {
+    Size = UDim2.new(1,0,0,25), Position = UDim2.fromOffset(0,0),
+    Text = "Script editor", TextSize = 15, Font = activeTheme.boldFont,
+    TextColor3 = activeColors.Text, BackgroundTransparency = 1,
+    TextXAlignment = Enum.TextXAlignment.Left
+}, "Text")
+local tabStrip = execElement("ScrollingFrame", {
+    Name = "CodeTabs", Size = UDim2.new(1,-66,0,30),
+    Position = UDim2.fromOffset(0,31), BackgroundTransparency = 1,
+    ScrollBarThickness = 3, ScrollingDirection = Enum.ScrollingDirection.X,
+    CanvasSize = UDim2.fromOffset(0,0)
+})
+local stripLayout = Instance.new("UIListLayout")
+stripLayout.FillDirection = Enum.FillDirection.Horizontal
+stripLayout.Padding = UDim.new(0,4)
+stripLayout.Parent = tabStrip
+stripLayout:GetPropertyChangedSignal("AbsoluteContentSize"):Connect(function()
+    tabStrip.CanvasSize = UDim2.fromOffset(stripLayout.AbsoluteContentSize.X + 8,0)
+end)
+local function execButton(text, x, y, width, callback)
+    local button = execElement("TextButton", {
+        Text = text, Font = activeTheme.font, TextSize = 11,
+        Size = UDim2.new(width,-4,0,32), Position = UDim2.new(x,0,1,-85),
+        BackgroundColor3 = activeColors.Tab, TextColor3 = activeColors.Text,
+        BorderColor3 = activeColors.Border or activeColors.Primary
+    }, "Tab")
+    button.MouseButton1Click:Connect(callback)
+    return button
+end
+local codeEditor = execElement("TextBox", {
+    Name = "CodeEditor", Size = UDim2.new(1,-4,1,-184),
+    Position = UDim2.fromOffset(0,68),
+    Text = "", PlaceholderText = "-- Paste your Luau code here",
+    MultiLine = true, ClearTextOnFocus = false,
+    TextXAlignment = Enum.TextXAlignment.Left, TextYAlignment = Enum.TextYAlignment.Top,
+    TextWrapped = false, TextSize = 12, Font = Enum.Font.Code,
+    TextColor3 = activeColors.Text, BackgroundColor3 = activeColors.Input or activeColors.Surface,
+    BorderColor3 = activeColors.Border or activeColors.Primary
+}, "Input")
+local execStatus = execElement("TextLabel", {
+    Size = UDim2.new(1,0,0,42), Position = UDim2.new(0,0,1,-44),
+    Text = "Ready. Scripts execute only when you click Execute.",
+    TextSize = 11, Font = activeTheme.font, TextColor3 = activeColors.Text,
+    BackgroundTransparency = 1, TextXAlignment = Enum.TextXAlignment.Left,
+    TextTruncate = Enum.TextTruncate.AtEnd
+}, "Text")
+local savedCodeTabs = Settings.ExecutorTabs
+if type(savedCodeTabs) ~= "table" then savedCodeTabs = {} end
+local codeTabs = {}
+for _, item in ipairs(savedCodeTabs) do
+    if type(item) == "table" and type(item.name) == "string" and type(item.code) == "string" then
+        table.insert(codeTabs, {name = item.name:sub(1,24), code = item.code})
+    end
+end
+if #codeTabs == 0 then table.insert(codeTabs, {name="Tab 1",code=""}) end
+Settings.ExecutorTabs = codeTabs
+local selectedCodeTab = math.clamp(tonumber(Settings.ExecutorSelectedTab) or 1,1,#codeTabs)
+local tabButtons = {}
+local switchingCodeTab = false
+local function persistEditor()
+    if codeTabs[selectedCodeTab] then
+        codeTabs[selectedCodeTab].code = codeEditor.Text
+        Settings.ExecutorTabs = codeTabs
+        Settings.ExecutorSelectedTab = selectedCodeTab
+        schedulePanelSave()
+    end
+end
+local renderCodeTabs
+renderCodeTabs = function()
+    for _, button in ipairs(tabButtons) do button:Destroy() end
+    table.clear(tabButtons)
+    for i, tab in ipairs(codeTabs) do
+        local button = Instance.new("TextButton")
+        button.Name = "CodeTab" .. i
+        button.Size = UDim2.fromOffset(75,25)
+        button.Text = tab.name
+        button.TextSize = 11
+        button.Font = activeTheme.font
+        button.TextColor3 = activeColors.Text
+        button.BackgroundColor3 = i == selectedCodeTab and activeColors.TabActive or activeColors.Tab
+        button.Parent = tabStrip
+        registerThemeObject(button,"Tab")
+        button.MouseButton1Click:Connect(function()
+            persistEditor()
+            selectedCodeTab = i
+            switchingCodeTab = true
+            codeEditor.Text = codeTabs[i].code
+            switchingCodeTab = false
+            Settings.ExecutorSelectedTab = i
+            schedulePanelSave()
+            renderCodeTabs()
+        end)
+        table.insert(tabButtons,button)
+    end
+end
+codeEditor:GetPropertyChangedSignal("Text"):Connect(function()
+    if not switchingCodeTab then persistEditor() end
+end)
+switchingCodeTab = true
+codeEditor.Text = codeTabs[selectedCodeTab].code
+switchingCodeTab = false
+renderCodeTabs()
+local newTabButton = execElement("TextButton", {
+    Text = "+ Tab", Font = activeTheme.font, TextSize = 11,
+    Size = UDim2.fromOffset(58,28), Position = UDim2.new(1,-60,0,31),
+    BackgroundColor3 = activeColors.Tab, TextColor3 = activeColors.Text
+}, "Tab")
+newTabButton.MouseButton1Click:Connect(function()
+    persistEditor()
+    table.insert(codeTabs,{name="Tab " .. (#codeTabs+1),code=""})
+    selectedCodeTab = #codeTabs
+    switchingCodeTab = true
+    codeEditor.Text = ""
+    switchingCodeTab = false
+    Settings.ExecutorSelectedTab = selectedCodeTab
+    schedulePanelSave()
+    renderCodeTabs()
+end)
+execButton("Execute",0,0,0.5,function()
+    persistEditor()
+    local source = codeEditor.Text
+    local compiler = loadstring
+    if type(compiler) ~= "function" then
+        execStatus.Text = "This executor does not expose loadstring."
+        return
+    end
+    local ok, compiled, compileError = pcall(compiler,source)
+    if not ok or type(compiled) ~= "function" then
+        execStatus.Text = "Compile error: " .. tostring(compileError or compiled):sub(1,125)
+        return
+    end
+    execStatus.Text = "Executing " .. codeTabs[selectedCodeTab].name .. "..."
+    task.spawn(function()
+        local success, result = pcall(compiled)
+        if executorRoot.Parent then
+            execStatus.Text = success and "Executed successfully." or ("Runtime error: " .. tostring(result):sub(1,125))
+        end
+    end)
+end)
+execButton("Delete Tab",0.5,0,0.5,function()
+    if #codeTabs == 1 then
+        execStatus.Text = "Keep at least one tab."
+        return
+    end
+    table.remove(codeTabs,selectedCodeTab)
+    selectedCodeTab = math.clamp(selectedCodeTab,1,#codeTabs)
+    switchingCodeTab = true
+    codeEditor.Text = codeTabs[selectedCodeTab].code
+    switchingCodeTab = false
+    Settings.ExecutorSelectedTab = selectedCodeTab
+    schedulePanelSave()
+    renderCodeTabs()
+    execStatus.Text = "Tab deleted."
+end)
+
+-- The executor is a standalone native panel window, not an embedded tab.
+local executorWindow
+openExecutorWorkspace = function()
+    if executorWindow and executorWindow.Frame and executorWindow.Frame.Parent then
+        executorWindow.Show()
+        return
+    end
+    local viewport = workspace.CurrentCamera and workspace.CurrentCamera.ViewportSize or Vector2.new(1280,720)
+    local width = math.max(340, math.min(780, viewport.X - 50))
+    local height = math.max(320, math.min(570, viewport.Y - 65))
+    executorWindow = createWindow("Simba Executor", width, height)
+    local window = executorWindow
+    local content = window.Content
+    for _, child in ipairs(content:GetChildren()) do
+        if child:IsA("UIListLayout") or child:IsA("UIPadding") then child:Destroy() end
+    end
+    content.ScrollBarThickness = 0
+    content.ScrollingEnabled = false
+    content.BackgroundTransparency = 1
+    content.BorderSizePixel = 0
+    executorRoot.Parent = content
+    executorRoot.Position = UDim2.fromOffset(9,8)
+    executorRoot.Visible = true
+    for _, element in ipairs(executorRoot:GetDescendants()) do
+        if element:IsA("GuiObject") then element.ZIndex = 110 end
+    end
+    -- Native close button destroys its frame; detach the editor first to preserve tabs.
+    window.Frame.Destroying:Connect(function()
+        if executorRoot.Parent == content then
+            executorRoot.Parent = ScreenGui
+            executorRoot.Visible = false
+        end
+        if executorWindow == window then executorWindow = nil end
+    end)
+    window.Show()
+end
+
 local PluginListLabel = Instance.new("TextLabel")
 PluginListLabel.Size = UDim2.new(1, 0, 0, 48)
 PluginListLabel.BackgroundTransparency = 1
@@ -3849,7 +5012,7 @@ PluginListLabel.Visible = false
 PluginListLabel.Parent = ContentFrame
 registerThemeObject(PluginListLabel, "Text")
 PluginListLabel.Font = activeTheme.font
-table.insert(tabs["Plugins"].widgets, PluginListLabel)
+-- Plugin manager heading removed from the visible Plugins page
 
 -- Plugin Hub
 local PluginHubFrame = Instance.new("ScrollingFrame")
@@ -3863,7 +5026,7 @@ PluginHubFrame.CanvasSize = UDim2.new(0, 0, 0, 0)
 PluginHubFrame.Visible = false
 PluginHubFrame.Parent = ContentFrame
 registerThemeObject(PluginHubFrame, "Content")
-table.insert(tabs["Plugins"].widgets, PluginHubFrame)
+-- Redundant plugin list hidden; right-click plugin tabs to manage them
 
 local PluginHubLayout = Instance.new("UIListLayout")
 PluginHubLayout.Padding = UDim.new(0, 5)
@@ -3922,13 +5085,18 @@ updatePluginHub = function()
         DeleteBtn.Parent = EntryFrame
         registerThemeObject(DeleteBtn, "Danger")
 
+        EntryFrame.InputBegan:Connect(function(input)
+            if input.UserInputType == Enum.UserInputType.MouseButton2 then openPluginContextMenu(pluginName) end
+        end)
+
         DeleteBtn.MouseButton1Click:Connect(function()
             cleanupPluginRuntime(pluginName, pluginData)
             
             local fileName = pluginName:gsub("%s+", "_"):lower() .. ".lua"
-            local filePath = PLUGIN_FOLDER .. "/" .. fileName
-            if isfile(filePath) then
-                delfile(filePath)
+            local filePath = pluginSourcePaths[pluginName] or (PLUGIN_FOLDER .. "/" .. fileName)
+            if isfile and isfile(filePath) and (delfile or deletefile) then
+                pcall(delfile or deletefile, filePath)
+                pluginSourcePaths[pluginName] = nil
                 print("Deleted plugin file: " .. filePath)
             end
             
@@ -4110,6 +5278,7 @@ createButton("Plugins", "Load Plugin", function()
     -- Save to disk
     local fileName = plugin.Name:gsub("%s+", "_"):lower() .. ".lua"
     local filePath = PLUGIN_FOLDER .. "/" .. fileName
+    pluginSourcePaths[plugin.Name] = filePath
     pcall(writefile, filePath, code)
     print("Saved to: " .. filePath)
 
@@ -4117,27 +5286,6 @@ createButton("Plugins", "Load Plugin", function()
     print("Plugin loaded successfully.")
 end)
 
-createButton("Plugins", "Reload All Plugins", function()
-    for pluginName, plugin in pairs(Plugins) do
-        cleanupPluginRuntime(pluginName, plugin)
-    end
-    local orphanedPluginTabs = {}
-    for tabName in pairs(tabs) do
-        if tabName ~= "Plugins" and tabName ~= "Settings" then
-            table.insert(orphanedPluginTabs, tabName)
-        end
-    end
-    for _, tabName in ipairs(orphanedPluginTabs) do
-        destroyPluginTab(tabName)
-    end
-    loadPlugins()
-    updatePluginHub()
-    print("Reloaded all plugins.")
-end)
-
-createButton("Plugins", "Clear Editor", function()
-    PluginCodeBox.Text = ""
-end)
 
 -- Info
 local InfoLabel = Instance.new("TextLabel")
@@ -4321,6 +5469,181 @@ task.wait()
 applyTheme(activeThemeName)
 
 loadPlugins(true)
+
+-- Store the versions already acknowledged independently of plugin and panel settings.
+local CHANGELOG_HISTORY_FILE = PLUGIN_DATA_FOLDER .. "/seen-versions.json"
+local function readSeenVersions()
+    if type(isfile) ~= "function" or type(readfile) ~= "function" then
+        return {}
+    end
+    local ok, result = pcall(function()
+        if not isfile(CHANGELOG_HISTORY_FILE) then return {} end
+        return HttpService:JSONDecode(readfile(CHANGELOG_HISTORY_FILE))
+    end)
+    if not ok or type(result) ~= "table" then return {} end
+    -- Support either {versions = {"1.0.0"}} or a simple string array.
+    local values = type(result.versions) == "table" and result.versions or result
+    local seen = {}
+    for _, value in pairs(values) do
+        if type(value) == "string" then seen[value] = true end
+    end
+    return seen
+end
+
+local function saveSeenVersion(version)
+    local seen = readSeenVersions()
+    seen[version] = true
+    local versions = {}
+    for value in pairs(seen) do table.insert(versions, value) end
+    table.sort(versions)
+    local ok, err = pcall(function()
+        if type(writefile) ~= "function" then error("writefile unavailable") end
+        if type(isfolder) == "function" and type(makefolder) == "function" and not isfolder(PLUGIN_DATA_FOLDER) then
+            makefolder(PLUGIN_DATA_FOLDER)
+        end
+        writefile(CHANGELOG_HISTORY_FILE, HttpService:JSONEncode({versions = versions}))
+    end)
+    if not ok then warn("[Changelog] Could not save version history: " .. tostring(err)) end
+    return ok
+end
+
+local function showWhatsNew()
+    if readSeenVersions()[PANEL_VERSION] or not MainFrame.Parent then return end
+    if MainFrame:FindFirstChild("WhatsNewOverlay") then return end
+
+    local overlay = Instance.new("Frame")
+    overlay.Name = "WhatsNewOverlay"
+    overlay.Size = UDim2.fromScale(1, 1)
+    overlay.BackgroundColor3 = activeColors.Panel
+    overlay.BorderSizePixel = 0
+    overlay.Active = true
+    overlay.ZIndex = 50000
+    overlay.Parent = MainFrame
+    registerThemeObject(overlay, "Panel")
+
+    local header = Instance.new("Frame")
+    header.Size = UDim2.new(1, 0, 0, 49)
+    header.BackgroundColor3 = activeColors.Header
+    header.BorderSizePixel = 0
+    header.ZIndex = 50001
+    header.Parent = overlay
+    registerThemeObject(header, "Header")
+
+    local heading = Instance.new("TextLabel")
+    heading.BackgroundTransparency = 1
+    heading.Position = UDim2.fromOffset(15, 5)
+    heading.Size = UDim2.new(1, -75, 0, 23)
+    heading.Font = activeTheme.boldFont
+    heading.TextSize = 17
+    heading.TextXAlignment = Enum.TextXAlignment.Left
+    heading.TextColor3 = activeColors.Text
+    heading.Text = "What's New  •  v" .. tostring(PANEL_VERSION)
+    heading.ZIndex = 50002
+    heading.Parent = header
+    registerThemeObject(heading, "Text")
+
+    local subtitle = Instance.new("TextLabel")
+    subtitle.BackgroundTransparency = 1
+    subtitle.Position = UDim2.fromOffset(15, 27)
+    subtitle.Size = UDim2.new(1, -75, 0, 16)
+    subtitle.Font = activeTheme.font
+    subtitle.TextSize = 11
+    subtitle.TextXAlignment = Enum.TextXAlignment.Left
+    subtitle.TextColor3 = activeColors.MutedText
+    subtitle.Text = "Release notes • Shown once per version"
+    subtitle.ZIndex = 50002
+    subtitle.Parent = header
+    registerThemeObject(subtitle, "MutedText")
+
+    local close = Instance.new("TextButton")
+    close.Name = "CloseWhatsNew"
+    close.Size = UDim2.fromOffset(31, 29)
+    close.Position = UDim2.new(1, -40, 0, 10)
+    close.BackgroundColor3 = activeColors.Danger
+    close.BorderSizePixel = 0
+    close.Font = activeTheme.boldFont
+    close.TextSize = 20
+    close.Text = "X"
+    close.TextColor3 = Color3.new(1, 1, 1)
+    close.ZIndex = 50003
+    close.Parent = header
+    registerThemeObject(close, "Danger")
+
+    local body = Instance.new("ScrollingFrame")
+    body.Name = "ReleaseNotes"
+    body.Position = UDim2.fromOffset(12, 61)
+    body.Size = UDim2.new(1, -24, 1, -74)
+    body.BackgroundColor3 = activeColors.Content
+    body.BorderSizePixel = 0
+    body.ScrollBarThickness = 5
+    body.AutomaticCanvasSize = Enum.AutomaticSize.Y
+    body.CanvasSize = UDim2.new()
+    body.Active = true
+    body.ZIndex = 50001
+    body.Parent = overlay
+    registerThemeObject(body, "Content")
+    body.ScrollBarImageColor3 = activeColors.Primary
+
+    local padding = Instance.new("UIPadding")
+    padding.PaddingTop = UDim.new(0, 11)
+    padding.PaddingBottom = UDim.new(0, 11)
+    padding.PaddingLeft = UDim.new(0, 12)
+    padding.PaddingRight = UDim.new(0, 12)
+    padding.Parent = body
+    local layout = Instance.new("UIListLayout")
+    layout.SortOrder = Enum.SortOrder.LayoutOrder
+    layout.Padding = UDim.new(0, 7)
+    layout.Parent = body
+
+    local categories = {
+        {"Added", Color3.fromRGB(101, 213, 149)},
+        {"Changed", Color3.fromRGB(114, 182, 255)},
+        {"Fixed", Color3.fromRGB(248, 204, 108)},
+        {"Removed", Color3.fromRGB(255, 127, 135)},
+    }
+    for index, category in ipairs(categories) do
+        local titleText, accent = category[1], category[2]
+        local section = Instance.new("TextLabel")
+        section.Name = titleText .. "Section"
+        section.Size = UDim2.new(1, -4, 0, 0)
+        section.AutomaticSize = Enum.AutomaticSize.Y
+        section.BackgroundTransparency = 1
+        section.Font = activeTheme.font
+        section.TextSize = 12
+        section.TextWrapped = true
+        section.TextXAlignment = Enum.TextXAlignment.Left
+        section.TextYAlignment = Enum.TextYAlignment.Top
+        section.RichText = true
+        section.TextColor3 = activeColors.Text
+        section.LayoutOrder = index
+        section.ZIndex = 50002
+        local lines = {}
+        for _, entry in ipairs(PANEL_CHANGELOG[titleText] or {}) do
+            table.insert(lines, "• " .. tostring(entry):gsub("&", "&amp;"):gsub("<", "&lt;"):gsub(">", "&gt;"))
+        end
+        local hex = accent:ToHex()
+        section.Text = '<font color="#' .. hex .. '"><b>' .. titleText .. '</b></font>\n' .. (#lines > 0 and table.concat(lines, "\n") or "Nothing this update.")
+        section.Parent = body
+        registerThemeObject(section, "Text")
+    end
+
+    local closed = false
+    close.MouseButton1Click:Connect(function()
+        if closed then return end
+        closed = true
+        saveSeenVersion(PANEL_VERSION)
+        overlay:Destroy()
+    end)
+end
+
+task.spawn(function()
+    -- Wait until the startup overlay has disappeared before displaying release notes.
+    while ScreenGui.Parent and startupLoadingScreen and startupLoadingScreen.Frame.Parent do
+        task.wait(0.1)
+    end
+    if ScreenGui.Parent then showWhatsNew() end
+end)
+
 task.spawn(function()
     while ScreenGui.Parent do
         task.wait(15)
@@ -4342,16 +5665,20 @@ local function setMinimized(shouldMinimize)
     end
 
     if isMinimized then
+        MainFrame:SetAttribute("SimbaResizeDisabled", true)
         MinimizeBtn.Text = "+"
     else
+        MainFrame:SetAttribute("SimbaResizeDisabled", false)
         TabBar.Visible = true
         ContentFrame.Visible = true
         MinimizeBtn.Text = "_"
     end
 
+    local expandedWidth = MainFrame:GetAttribute("SimbaExpandedWidth") or activeTheme.width
+    local expandedHeight = MainFrame:GetAttribute("SimbaExpandedHeight") or activeTheme.height
     local targetSize = isMinimized
-        and UDim2.new(0, activeTheme.width, 0, activeTheme.headerHeight)
-        or UDim2.new(0, activeTheme.width, 0, activeTheme.height)
+        and UDim2.fromOffset(expandedWidth, activeTheme.headerHeight)
+        or UDim2.fromOffset(expandedWidth, expandedHeight)
 
     local activeTween = TweenService:Create(MainFrame, minimizeTweenInfo, {
         Size = targetSize
@@ -4408,16 +5735,8 @@ table.insert(connections, UserInputService.InputBegan:Connect(function(input)
         end
     end
 end))
--- Draggable
-local dragging = false
-local dragInput, mousePos, framePos
-
-TopBar.InputBegan:Connect(function(input)
-    if input.UserInputType == Enum.UserInputType.MouseButton1 then
-        dragging = true
-        mousePos = input.Position
-        framePos = MainFrame.Position
-        
+-- Smooth dragging for the main panel.
+local function bringMainToFront()
         -- Bring main window to front (only update if needed)
         local newZ = windowZIndex + 10
         if MainFrame.ZIndex ~= newZ then
@@ -4430,38 +5749,21 @@ TopBar.InputBegan:Connect(function(input)
             TabBar.ZIndex = windowZIndex + 1
             ContentFrame.ZIndex = windowZIndex + 1
         end
-    end
-end)
+end
 
--- Also bring to front when clicking anywhere on main frame
+attachSmoothDrag(TopBar, MainFrame, connections, bringMainToFront)
+--[[ Resize feature temporarily disabled; implementation retained.
+attachWindowResize(MainFrame, 360, 260, connections, function(w, h)
+    MainFrame:SetAttribute("SimbaExpandedWidth", w)
+    MainFrame:SetAttribute("SimbaExpandedHeight", h)
+end, bringMainToFront)
+]]
 MainFrame.InputBegan:Connect(function(input)
     if input.UserInputType == Enum.UserInputType.MouseButton1 then
-        local newZ = windowZIndex + 10
-        if MainFrame.ZIndex ~= newZ then
-            windowZIndex = newZ
-            MainFrame.ZIndex = windowZIndex
-            TopBar.ZIndex = windowZIndex + 1
-            Title.ZIndex = windowZIndex + 2
-            MinimizeBtn.ZIndex = windowZIndex + 2
-            CloseBtn.ZIndex = windowZIndex + 2
-            TabBar.ZIndex = windowZIndex + 1
-            ContentFrame.ZIndex = windowZIndex + 1
-        end
+        bringMainToFront()
     end
 end)
 
-table.insert(connections, UserInputService.InputChanged:Connect(function(input)
-    if dragging and input.UserInputType == Enum.UserInputType.MouseMovement then
-        local delta = input.Position - mousePos
-        MainFrame.Position = UDim2.new(framePos.X.Scale, framePos.X.Offset + delta.X, framePos.Y.Scale, framePos.Y.Offset + delta.Y)
-    end
-end))
-
-table.insert(connections, UserInputService.InputEnded:Connect(function(input)
-    if input.UserInputType == Enum.UserInputType.MouseButton1 then
-        dragging = false
-    end
-end))
 CloseBtn.MouseButton1Click:Connect(function()
     -- Disconnect all main connections
     for _, connection in pairs(connections) do
