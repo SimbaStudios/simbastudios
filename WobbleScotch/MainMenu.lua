@@ -3,11 +3,11 @@
 -- NOW WITH: Plugin Save/Load API & Enhanced Player Access
 
 -- CHANGELOG SETTINGS: edit these for each release.
-local PANEL_VERSION = "1.3.8"
+local PANEL_VERSION = "1.3.9"
 local PANEL_CHANGELOG = {
     Added = {},
-    Changed = {},
-    Fixed = {"Fixed Remove favorite in the plugin right-click menu so it actually clears the saved favorite and refreshes Favorites"},
+    Changed = {"Added a separate Clear Editor button; Load Plugin no longer clears the editor"},
+    Fixed = {},
     Removed = {},
 }
 
@@ -5284,6 +5284,11 @@ createButton("Plugins", "Load Plugin", function()
 
     updatePluginHub()
     print("Plugin loaded successfully.")
+end)
+
+
+createButton("Plugins", "Clear Editor", function()
+    PluginCodeBox.Text = ""
 end)
 
 
