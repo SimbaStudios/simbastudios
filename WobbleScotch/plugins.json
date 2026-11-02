@@ -1,0 +1,29 @@
+
+{
+  "plugins": [
+    {
+      "id": "fulbright",
+      "name": "Fulbright",
+      "version": "1.0.0",
+      "description": "Brightens dark areas and improves visibility.",
+      "author": "Simba Studios",
+      "file": "https://www.simbastudios.win/plugins/fulbright.lua"
+    },
+    {
+      "id": "player-utilities",
+      "name": "Player Utilities",
+      "version": "1.0.0",
+      "description": "Additional player utility features.",
+      "author": "Simba Studios",
+      "file": "https://www.simbastudios.win/plugins/player-utilities.lua"
+    },
+    {
+      "id": "notifications",
+      "name": "Notifications",
+      "version": "1.0.0",
+      "description": "Custom notification utilities.",
+      "author": "Simba Studios",
+      "file": "https://www.simbastudios.win/plugins/notifications.lua"
+    }
+  ]
+}
